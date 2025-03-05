@@ -1,0 +1,6 @@
+defaults:
+  - ...
+
+hydra:
+  searchpath:
+    - file://jax-template/config
