@@ -1,1 +1,1 @@
-# jax-template
+# Atlas

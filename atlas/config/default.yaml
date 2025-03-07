@@ -1,0 +1,6 @@
+defaults:
+  - lmm: lmm
+
+hydra:
+  searchpath:
+    - file://atlas/config

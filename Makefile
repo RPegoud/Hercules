@@ -5,7 +5,7 @@ GPUS := $(shell command -v nvidia-smi > /dev/null && nvidia-smi > /dev/null 2>&1
 BASE_FLAGS=-it --rm
 RUN_FLAGS=$(GPUS) $(BASE_FLAGS)
 
-DOCKER_IMAGE_NAME = template # TODO: replace with project name
+DOCKER_IMAGE_NAME = atlas
 IMAGE = $(DOCKER_IMAGE_NAME):latest
 DOCKER_RUN=docker run $(RUN_FLAGS) $(IMAGE)
 USE_CUDA = $(if $(GPUS),true,false)
