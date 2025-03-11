@@ -14,17 +14,23 @@ class NeuralMemory(nn.Module):
         learning_rate: float,
         weight_decay: float,
         max_adaptive_lr: float,
+        persistent_memory_dim: int,
     ) -> None:
+        # TODO: add SWA
         # TODO: add chunking
         # TODO: add multihead processing
-        # TODO: add adaptive learning rate, momentum
-        # TODO: add persistent memory
+        # TODO: add momentum & past surprises
+
+        # DONE: add adaptive learning rate
+        # DONE: add persistent memory
+
         super(NeuralMemory, self).__init__()
         self.input_dim = input_dim
         self.layer_size = layer_size
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.max_adaptive_lr = max_adaptive_lr
+        self.persistent_memory_dim = persistent_memory_dim
 
         self.lmm = ResLinear(input_dim, n_hidden_layers)
         self.key_projection = LinearProjection(input_dim, layer_size)
@@ -32,15 +38,23 @@ class NeuralMemory(nn.Module):
         self.value_projection = LinearProjection(input_dim, layer_size)
         self.adaptive_lr_projection = AdaptiveLR(
             input_dim, 1, self.max_adaptive_lr
-        )  # TODO: modify out dim when adding chuncking
+        )  # TODO: modify out_dim when adding chuncking
+        self.meta_memory = nn.Parameter(torch.randn(persistent_memory_dim, input_dim))
 
         self.optimizer = torch.optim.AdamW(
             self.lmm.parameters(), self.learning_rate, weight_decay=self.weight_decay
         )
 
     def _associative_loss(self, params, inputs, targets, weights) -> float:
-        pred = functional_call(self.lmm, params, inputs)
-        loss = torch.pow(pred - targets, 2).mean(dim=-1)
+        batch_size = inputs.shape[0]
+        meta_memory = torch.tile(self.meta_memory, dims=(batch_size, 1, 1))
+        meta_inputs = torch.concat([meta_memory, inputs], dim=1)
+        meta_inputs = meta_inputs.view(-1, self.input_dim)
+
+        targets = targets.view(-1, self.input_dim)
+        preds = functional_call(self.lmm, params, inputs).view(-1, self.input_dim)
+
+        loss = torch.pow(preds - targets, 2).mean(dim=-1)
         weighted_loss = loss * weights
         return weighted_loss.sum(), loss
 
@@ -53,11 +67,8 @@ class NeuralMemory(nn.Module):
         values = self.value_projection(x)
         adaptive_lr = self.adaptive_lr_projection(x).view(-1)
 
-        keys_flat = keys.view(-1, self.layer_size)
-        values_flat = values.view(-1, self.layer_size)
-
         grad_fn = grad(self._associative_loss, has_aux=True)
-        grads, _ = grad_fn(dict(params), keys_flat, values_flat, adaptive_lr)
+        grads, _ = grad_fn(dict(params), keys, values, adaptive_lr)
         for name, param in self.lmm.named_parameters():
             if grads[name] is not None:
                 param.grad = grads[name]
