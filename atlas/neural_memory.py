@@ -1,4 +1,4 @@
-from layers import ResLinear, LinearProjection, AdaptiveLR
+from layers import ResLinear, LinearProjection, AdaptiveLR, SlidingWindowAttention
 import torch
 import torch.nn as nn
 from torch.func import functional_call, grad
@@ -14,15 +14,18 @@ class NeuralMemory(nn.Module):
         learning_rate: float,
         weight_decay: float,
         max_adaptive_lr: float,
-        persistent_memory_dim: int,
+        meta_memory_dim: int,
+        num_attention_heads: int,
+        attention_window_size: int,
+        device: str,  # TODO: pass variables to device before/after mha if needed
     ) -> None:
-        # TODO: add SWA
         # TODO: add chunking
         # TODO: add multihead processing
         # TODO: add momentum & past surprises
 
-        # DONE: add adaptive learning rate
+        # DONE: add SWA
         # DONE: add persistent memory
+        # DONE: add adaptive learning rate
 
         super(NeuralMemory, self).__init__()
         self.input_dim = input_dim
@@ -30,7 +33,10 @@ class NeuralMemory(nn.Module):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.max_adaptive_lr = max_adaptive_lr
-        self.persistent_memory_dim = persistent_memory_dim
+        self.meta_memory_dim = meta_memory_dim
+        self.num_attention_heads = num_attention_heads
+        self.attention_window_size = attention_window_size
+        self.device = device
 
         self.lmm = ResLinear(input_dim, n_hidden_layers)
         self.key_projection = LinearProjection(input_dim, layer_size)
@@ -39,33 +45,41 @@ class NeuralMemory(nn.Module):
         self.adaptive_lr_projection = AdaptiveLR(
             input_dim, 1, self.max_adaptive_lr
         )  # TODO: modify out_dim when adding chuncking
-        self.meta_memory = nn.Parameter(torch.randn(persistent_memory_dim, input_dim))
+        self.meta_memory = nn.Parameter(torch.randn(meta_memory_dim, input_dim))
 
         self.optimizer = torch.optim.AdamW(
             self.lmm.parameters(), self.learning_rate, weight_decay=self.weight_decay
         )
+        self.swa = SlidingWindowAttention(
+            input_dim, num_attention_heads, attention_window_size, device
+        )
+
 
     def _associative_loss(self, params, inputs, targets, weights) -> float:
-        batch_size = inputs.shape[0]
-        meta_memory = torch.tile(self.meta_memory, dims=(batch_size, 1, 1))
-        meta_inputs = torch.concat([meta_memory, inputs], dim=1)
-        meta_inputs = meta_inputs.view(-1, self.input_dim)
-
-        targets = targets.view(-1, self.input_dim)
-        preds = functional_call(self.lmm, params, inputs).view(-1, self.input_dim)
-
+        preds = functional_call(self.lmm, params, inputs)
         loss = torch.pow(preds - targets, 2).mean(dim=-1)
-        weighted_loss = loss * weights
+        weighted_loss = loss * weights.squeeze()
         return weighted_loss.sum(), loss
+
+    def _inject_meta_memory(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.size(0)
+        meta_memory = self.meta_memory.expand(batch_size, -1, -1)
+        meta_x = torch.concat([meta_memory, x], dim=1)
+        return meta_x
+    
+    def _discard_meta_memory(self, x: torch.Tensor):
+        return x[:, self.meta_memory_dim: , :]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self.optimizer.zero_grad()
-
         params = self.lmm.named_parameters()
-        keys = self.key_projection(x)
+
+        x = self._inject_meta_memory(x)
+
         queries = self.query_projection(x)
+        keys = self.key_projection(x)
         values = self.value_projection(x)
-        adaptive_lr = self.adaptive_lr_projection(x).view(-1)
+        adaptive_lr = self.adaptive_lr_projection(x)
 
         grad_fn = grad(self._associative_loss, has_aux=True)
         grads, _ = grad_fn(dict(params), keys, values, adaptive_lr)
@@ -76,5 +90,8 @@ class NeuralMemory(nn.Module):
 
         surprises = TensorDict(grads).mul(-1)
         retrieved = self.lmm(queries)
+        retrieved = self.swa(retrieved)
 
-        return retrieved, surprises
+        output = self._discard_meta_memory(retrieved)
+
+        return output

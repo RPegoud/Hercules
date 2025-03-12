@@ -45,3 +45,26 @@ class AdaptiveLR(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return F.sigmoid(self.linear(x)) * self.max_lr
+
+class SlidingWindowAttention(nn.Module):
+    """Self attention block with sliding window."""
+
+    def __init__(self, input_dim: int, num_heads: int, window_size: int, device: str):
+        super(SlidingWindowAttention, self).__init__()
+        self.window_size = window_size
+        self.attention = nn.MultiheadAttention(
+            input_dim, num_heads, batch_first=True, # device=device # TODO: reactivate for testing
+        )
+
+    def forward(self, x: torch.Tensor):
+        seq_len = x.size(1)
+        attn_mask = torch.zeros(seq_len, seq_len).bool()
+        attn_mask = attn_mask.to(x.device)
+        indices = torch.arange(seq_len, device=x.device)
+        # sliding attention mask
+        attn_mask = (indices[:, None] - indices[None, :]).abs() <= (
+            self.window_size // 2
+        )
+
+        output, _ = self.attention(x, x, x, attn_mask=attn_mask)
+        return output
