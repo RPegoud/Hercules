@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from einops.layers.torch import Rearrange
 
 
 class ResLinear(nn.Module):
@@ -26,35 +27,69 @@ class ResLinear(nn.Module):
 
 
 class LinearProjection(nn.Module):
-    """Linear Layer with no bias."""
+    """Linear layer with no bias."""
 
-    def __init__(self, in_dim: int, out_dim: int) -> None:
+    def __init__(self, in_dim: int, out_dim: int, n_chunks: int) -> None:
         super(LinearProjection, self).__init__()
+        self.n_chunks = n_chunks
+        self.reshape = (
+            Rearrange("b (n c) h -> b n c h", c=self.n_chunks)
+            if n_chunks > 1
+            else nn.Identity()
+        )
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         nn.init.xavier_uniform_(self.linear.weight)
 
     def forward(self, x: torch.Tensor):
-        return F.silu(self.linear(x))
+        assert (
+            x.size(-1) % self.n_chunks == 0
+        ), f"""Hidden dimension {x.size(1)} is not divisible by number of chunks {self.n_chunks}"""
+
+        return nn.Sequential(
+            self.reshape,
+            self.linear,
+            nn.SiLU(),
+        )(x)
 
 
 class AdaptiveLR(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, max_lr: float):
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        n_chunks: int,
+        max_lr: float,
+    ):
         super(AdaptiveLR, self).__init__()
+        self.n_chunks = n_chunks
+        self.reshape = (
+            Rearrange("b (n c) h -> b n c h", c=self.n_chunks)
+            if n_chunks > 1
+            else nn.Identity()
+        )
         self.linear = nn.Linear(in_dim, out_dim)
         self.max_lr = max_lr
 
     def forward(self, x: torch.Tensor):
-        return F.sigmoid(self.linear(x)) * self.max_lr
+        assert (
+            x.size(-1) % self.n_chunks == 0
+        ), f"""Hidden dimension {x.size(1)} is not divisible by number of chunks {self.n_chunks}"""
+
+        lr = nn.Sequential(
+            self.reshape,
+            self.linear,
+            nn.Sigmoid(),
+        )(x)
+        return lr * self.max_lr  # rescale lr
+
 
 class SlidingWindowAttention(nn.Module):
     """Self attention block with sliding window."""
 
-    def __init__(self, input_dim: int, num_heads: int, window_size: int, device: str):
+    def __init__(self, input_dim: int, num_heads: int, window_size: int):
         super(SlidingWindowAttention, self).__init__()
         self.window_size = window_size
-        self.attention = nn.MultiheadAttention(
-            input_dim, num_heads, batch_first=True, # device=device # TODO: reactivate for testing
-        )
+        self.attention = nn.MultiheadAttention(input_dim, num_heads, batch_first=True)
 
     def forward(self, x: torch.Tensor):
         seq_len = x.size(1)
