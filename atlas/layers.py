@@ -31,20 +31,11 @@ class LinearProjection(nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int, n_chunks: int) -> None:
         super(LinearProjection, self).__init__()
-        self.n_chunks = n_chunks
-        self.reshape = (
-            Rearrange("b (n c) h -> b n c h", c=self.n_chunks)
-            if n_chunks > 1
-            else nn.Identity()
-        )
+        self.reshape = Rearrange("b (n c) h -> b n c h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         nn.init.xavier_uniform_(self.linear.weight)
 
     def forward(self, x: torch.Tensor):
-        assert (
-            x.size(-1) % self.n_chunks == 0
-        ), f"""Hidden dimension {x.size(1)} is not divisible by number of chunks {self.n_chunks}"""
-
         return nn.Sequential(
             self.reshape,
             self.linear,
@@ -61,20 +52,11 @@ class AdaptiveLR(nn.Module):
         max_lr: float,
     ):
         super(AdaptiveLR, self).__init__()
-        self.n_chunks = n_chunks
-        self.reshape = (
-            Rearrange("b (n c) h -> b n c h", c=self.n_chunks)
-            if n_chunks > 1
-            else nn.Identity()
-        )
+        self.reshape = Rearrange("b (n c) h -> b n c h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim)
         self.max_lr = max_lr
 
     def forward(self, x: torch.Tensor):
-        assert (
-            x.size(-1) % self.n_chunks == 0
-        ), f"""Hidden dimension {x.size(1)} is not divisible by number of chunks {self.n_chunks}"""
-
         lr = nn.Sequential(
             self.reshape,
             self.linear,
