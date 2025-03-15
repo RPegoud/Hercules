@@ -43,18 +43,18 @@ class LinearProjection(nn.Module):
         )(x)
 
 
-class AdaptiveLR(nn.Module):
+class AdaptiveWeight(nn.Module):
     def __init__(
         self,
         in_dim: int,
         out_dim: int,
         n_chunks: int,
-        max_lr: float,
+        max_weight: float,
     ):
-        super(AdaptiveLR, self).__init__()
+        super(AdaptiveWeight, self).__init__()
         self.reshape = Rearrange("b (n c) h -> b n c h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim)
-        self.max_lr = max_lr
+        self.max_weight = max_weight
 
     def forward(self, x: torch.Tensor):
         lr = nn.Sequential(
@@ -62,7 +62,29 @@ class AdaptiveLR(nn.Module):
             self.linear,
             nn.Sigmoid(),
         )(x)
-        return lr * self.max_lr  # rescale lr
+        return lr * self.max_weight  # rescale lr
+
+
+# class AdaptiveLR(nn.Module):
+#     def __init__(
+#         self,
+#         in_dim: int,
+#         out_dim: int,
+#         n_chunks: int,
+#         max_lr: float,
+#     ):
+#         super(AdaptiveLR, self).__init__()
+#         self.reshape = Rearrange("b (n c) h -> b n c h", c=n_chunks)
+#         self.linear = nn.Linear(in_dim, out_dim)
+#         self.max_lr = max_lr
+
+#     def forward(self, x: torch.Tensor):
+#         lr = nn.Sequential(
+#             self.reshape,
+#             self.linear,
+#             nn.Sigmoid(),
+#         )(x)
+#         return lr * self.max_lr  # rescale lr
 
 
 class SlidingWindowAttention(nn.Module):

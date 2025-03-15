@@ -1,4 +1,4 @@
-from .layers import ResLinear, LinearProjection, AdaptiveLR, SlidingWindowAttention
+from .layers import ResLinear, LinearProjection, AdaptiveWeight, SlidingWindowAttention
 import torch
 import torch.nn as nn
 from torch.func import functional_call, grad, vmap
@@ -51,7 +51,7 @@ class NeuralMemory(nn.Module):
         self.key_projection = LinearProjection(input_dim, layer_size, n_chunks)
         self.query_projection = LinearProjection(input_dim, layer_size, 1)
         self.value_projection = LinearProjection(input_dim, layer_size, n_chunks)
-        self.adaptive_lr_projection = AdaptiveLR(
+        self.adaptive_lr_projection = AdaptiveWeight(
             input_dim, 1, n_chunks, max_adaptive_lr
         )
         self.meta_memory = nn.Parameter(torch.randn(meta_memory_dim, input_dim))
