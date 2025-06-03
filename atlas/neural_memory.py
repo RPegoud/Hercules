@@ -15,7 +15,7 @@ class NeuralMemory(nn.Module):
         n_layers: int,
         learning_rate: float,
         weight_decay: float,
-        momentum: float,
+        max_momentum: float,
         max_adaptive_lr: float,
         meta_memory_dim: int,
         num_attention_heads: int,
@@ -39,7 +39,7 @@ class NeuralMemory(nn.Module):
         self.n_layers = n_layers
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
-        self.momentum = momentum
+        self.max_momentum = max_momentum
         self.max_adaptive_lr = max_adaptive_lr
         self.meta_memory_dim = meta_memory_dim
         self.num_attention_heads = num_attention_heads
@@ -54,10 +54,14 @@ class NeuralMemory(nn.Module):
         self.adaptive_lr_projection = AdaptiveWeight(
             input_dim, 1, n_chunks, max_adaptive_lr
         )
+        self.adaptive_momentum_projection = AdaptiveWeight(
+            input_dim, 1, n_chunks, max_momentum
+        )
+
         self.meta_memory = nn.Parameter(torch.randn(meta_memory_dim, input_dim))
 
         self.optimizer = torch.optim.AdamW(
-            self.lmm.parameters(), learning_rate, weight_decay=weight_decay
+            self.lmm.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
         self.swa = SlidingWindowAttention(
             input_dim, num_attention_heads, attention_window_size
@@ -93,7 +97,9 @@ class NeuralMemory(nn.Module):
     def _compute_surprises(
         self, theta_t: torch.Tensor, per_sample_grads: TensorDict
     ) -> None:
-        eta = torch.full_like(theta_t, self.momentum)  # TODO: add learned gate
+        print(theta_t.shape)
+        # eta = torch.full_like(theta_t, self.momentum)  # TODO: add learned gate
+        eta = self.adaptive_momentum_projection()
         eta_prod = torch.cumprod(eta, dim=1)
         for layer_idx in range(self.n_layers):
             layer_id = f"weights.{layer_idx}"
@@ -129,6 +135,7 @@ class NeuralMemory(nn.Module):
         theta_t = adaptive_lr.mean(dim=1).squeeze(-1)
         self._compute_surprises(theta_t, per_sample_grads)
 
+        # TODO: check whether momentum is duplicated with adam
         for idx, (name, param) in enumerate(self.lmm.named_parameters()):
             if per_sample_grads.get(name) is not None:
                 param.grad = (per_sample_grads.get(name) + self.surprises[idx]).mean(0)
