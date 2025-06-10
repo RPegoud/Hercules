@@ -1,45 +1,33 @@
 from .layers import ResLinear, LinearProjection, AdaptiveWeight, SlidingWindowAttention
 import torch
 import torch.nn as nn
-from torch.func import functional_call, grad, vmap
+from torch.func import functional_call, vmap
 from tensordict import TensorDict
 import torch.nn.functional as F
+from .utils import l2_norm, flatten_and_expand
 
 
 class NeuralMemory(nn.Module):
 
     def __init__(
         self,
-        layer_size: int,
         input_dim: int,
-        n_layers: int,
+        hidden_dim: int,
+        output_dim: int,
+        n_hidden_layers: int,
         learning_rate: float,
-        weight_decay: float,
-        max_momentum: float,
         max_adaptive_lr: float,
         meta_memory_dim: int,
         num_attention_heads: int,
         attention_window_size: int,
         n_chunks: int,
     ) -> None:
-        # TODO: implement associative scan kernel
-        # TODO: add learned gating
-
-        # DONE: add SWA
-        # DONE: add persistent memory
-        # DONE: add adaptive learning rate
-        # DONE: add chunking
-        # DONE: pad inputs and replace n_chunks by chunk_size
-        # DONE: vectorize the loss
-        # DONE: add momentum, past surprises
-
         super(NeuralMemory, self).__init__()
         self.input_dim = input_dim
-        self.layer_size = layer_size
-        self.n_layers = n_layers
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.n_hidden_layers = n_hidden_layers
         self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.max_momentum = max_momentum
         self.max_adaptive_lr = max_adaptive_lr
         self.meta_memory_dim = meta_memory_dim
         self.num_attention_heads = num_attention_heads
@@ -47,34 +35,56 @@ class NeuralMemory(nn.Module):
         self.n_chunks = n_chunks
         self.added_padding = None
 
-        self.lmm = ResLinear(input_dim, n_layers)
-        self.key_projection = LinearProjection(input_dim, layer_size, n_chunks)
-        self.query_projection = LinearProjection(input_dim, layer_size, 1)
-        self.value_projection = LinearProjection(input_dim, layer_size, n_chunks)
-        self.adaptive_lr_projection = AdaptiveWeight(
-            input_dim, 1, n_chunks, max_adaptive_lr
+        self.lmm = ResLinear(input_dim, hidden_dim, output_dim, n_hidden_layers)
+        self.key_projection = LinearProjection(input_dim, output_dim, n_chunks)
+        self.query_projection = LinearProjection(input_dim, output_dim, 1)
+        self.value_projection = LinearProjection(input_dim, output_dim, n_chunks)
+
+        # α: forget gate
+        self.adaptive_forget_projection = AdaptiveWeight(
+            input_dim, 1, n_chunks, max_weight=1
         )
+        # θ: data-dependent learning rate
+        self.adaptive_lr_projection = AdaptiveWeight(
+            input_dim, 1, n_chunks, max_weight=max_adaptive_lr
+        )
+        # η: data-dependent surprise momentum
         self.adaptive_momentum_projection = AdaptiveWeight(
-            input_dim, 1, n_chunks, max_momentum
+            input_dim, 1, n_chunks, max_weight=1
         )
 
         self.meta_memory = nn.Parameter(torch.randn(meta_memory_dim, input_dim))
+        nn.init.xavier_uniform_(
+            self.meta_memory
+        )  # TODO: is it necessary to initialise here?
 
-        self.optimizer = torch.optim.AdamW(
-            self.lmm.parameters(), lr=learning_rate, weight_decay=weight_decay
-        )
         self.swa = SlidingWindowAttention(
             input_dim, num_attention_heads, attention_window_size
         )
 
-        self.register_buffer(
-            "surprises",
-            torch.zeros((self.n_layers, self.n_chunks, self.input_dim, self.input_dim)),
-        )
+        self.momentum_states = nn.ParameterDict()
+        self._initialize_momentum_buffers()
+
+    def _initialize_momentum_buffers(self):
+        """Initialize momentum states as buffers for each LMM parameter."""
+        for name, param in self.lmm.named_parameters():
+            self.register_buffer(
+                f"momentum_{name.replace('.', '_')}", torch.zeros_like(param)
+            )
+
+    def _get_momentum_dict(self, batch_size, device):
+        """Return a dictionary of momentum states, reshaped for batch processing."""
+        momentum_dict = {}
+        for name, param in self.lmm.named_parameters():
+            buffer_name = f"momentum_{name.replace('.', '_')}"
+            momentum = getattr(self, buffer_name)
+            # Expand to match batch size
+            momentum = momentum.expand(batch_size, *momentum.shape).to(device)
+            momentum_dict[name] = momentum
+        return TensorDict(momentum_dict)
 
     def _pad_to_chunk_size(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.size(1)
-        print(seq_len, self.n_chunks)
         if not seq_len % self.n_chunks == 0:
             pad = (seq_len // self.n_chunks) * self.n_chunks + self.n_chunks - seq_len
             self.added_padding = -pad
@@ -87,61 +97,61 @@ class NeuralMemory(nn.Module):
         meta_x = torch.concat([meta_memory, x], dim=1)
         return meta_x
 
-    def _associative_memory_loss(self, params, inputs, targets, weights) -> float:
+    def _associative_memory_loss(
+        self,
+        params: TensorDict,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        adaptive_lr: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         preds = functional_call(self.lmm, params, inputs)
-        loss = torch.pow(preds - targets, 2).mean(dim=-1)
-        weighted_loss = loss * weights.squeeze()
+        loss = F.mse_loss(preds, targets, reduction="none").mean(dim=-1)
+        weighted_loss = loss * adaptive_lr.squeeze()
         return weighted_loss.sum(), loss
 
-    @torch.no_grad
-    def _compute_surprises(
-        self, theta_t: torch.Tensor, per_sample_grads: TensorDict
-    ) -> None:
-        print(theta_t.shape)
-        # eta = torch.full_like(theta_t, self.momentum)  # TODO: add learned gate
-        eta = self.adaptive_momentum_projection()
-        eta_prod = torch.cumprod(eta, dim=1)
-        for layer_idx in range(self.n_layers):
-            layer_id = f"weights.{layer_idx}"
-            if layer_id in per_sample_grads:
-                u_t = per_sample_grads[layer_id]  # (n_chunks, input_dim, input_dim)
-                # Vectorized S_t = -sum(theta_t * u_t * eta_prod)
-                theta_u = (
-                    theta_t.unsqueeze(-1).unsqueeze(-1) * u_t
-                )  # (batch_size, n_chunks, input_dim, input_dim)
-                weighted_theta_u = theta_u * eta_prod.unsqueeze(-1).unsqueeze(-1)
-                S_t = -torch.cumsum(
-                    weighted_theta_u.mean(dim=0), dim=0
-                )  # (n_chunks, input_dim, input_dim)
-                self.surprises[layer_idx] = S_t
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self.optimizer.zero_grad()
         params = self.lmm.named_parameters()
 
         x = self._inject_meta_memory(x)
         x = self._pad_to_chunk_size(x)
 
-        queries = self.query_projection(x)
-        keys = self.key_projection(x)
-        values = self.value_projection(x)
+        q = self.query_projection(x)
+        k = self.key_projection(x)
+        v = self.value_projection(x)
+
+        q, k = l2_norm(q), l2_norm(k)
+        momentum_dict = self._get_momentum_dict(x.size(0), x.device)
+
         adaptive_lr = self.adaptive_lr_projection(x)
+        adaptive_forget = self.adaptive_forget_projection(x)
+        adaptive_momentum = self.adaptive_momentum_projection(x)
 
-        grad_fn = grad(self._associative_memory_loss, has_aux=True)
-        per_chunk_grad_fn = vmap(grad_fn, in_dims=(None, 2, 2, 2))
-        per_sample_grads, _ = per_chunk_grad_fn(dict(params), keys, values, adaptive_lr)
-        per_sample_grads = TensorDict(per_sample_grads)
+        grad_fn = torch.func.grad(self._associative_memory_loss, has_aux=True)
+        per_chunk_grad_fn = vmap(grad_fn, in_dims=(None, 1, 1, 1))
+        per_chunk_grads, _ = per_chunk_grad_fn(dict(params), k, v, adaptive_lr)
+        per_chunk_grads = TensorDict(per_chunk_grads)
 
-        theta_t = adaptive_lr.mean(dim=1).squeeze(-1)
-        self._compute_surprises(theta_t, per_sample_grads)
+        for name, param in self.lmm.named_parameters():
+            if per_chunk_grads.get(name) is not None:
+                grad = per_chunk_grads[name].mean(dim=0)  # average per chunk
+                past_momentum = momentum_dict[name]
 
-        # TODO: check whether momentum is duplicated with adam
-        for idx, (name, param) in enumerate(self.lmm.named_parameters()):
-            if per_sample_grads.get(name) is not None:
-                param.grad = (per_sample_grads.get(name) + self.surprises[idx]).mean(0)
-        self.optimizer.step()
+                alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
+                theta_t = adaptive_lr.mean(dim=[1, 2, 3])
+                eta_t = adaptive_momentum.mean(dim=[1, 2, 3])
 
-        retrieved = self.lmm(queries.squeeze())
+                alpha_t = flatten_and_expand(alpha_t, 2)
+                eta_t = flatten_and_expand(eta_t, 2)
+                theta_t = flatten_and_expand(theta_t, 2)
+
+                past_momentum = past_momentum.mul(eta_t)
+                momentum = past_momentum.sub(theta_t * grad)
+                param = param * (1 - alpha_t) + momentum
+
+                buffer_name = f"momentum_{name.replace('.', '_')}"
+                getattr(self, buffer_name).copy_(momentum.mean(dim=0))
+
+        retrieved = self.lmm(q.squeeze())
         retrieved = self.swa(retrieved)
 
         # discard meta-memory and padding
