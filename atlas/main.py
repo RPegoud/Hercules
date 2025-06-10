@@ -4,7 +4,7 @@ from datasets import load_dataset
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, Dataset
 from transformers import LlamaConfig, LlamaForCausalLM
-from utils import log_config
+from logger import log_config
 
 
 @hydra.main(
