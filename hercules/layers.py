@@ -5,28 +5,6 @@ import numpy as np
 from einops.layers.torch import Rearrange
 
 
-# class ResLinear(nn.Module):
-#     """Residual MLP with SiLU activation."""
-
-#     def __init__(self, layer_size: int, num_layers: int):
-#         super(ResLinear, self).__init__()
-#         dims = np.tile([layer_size], num_layers)
-#         self.weights = nn.ParameterList([nn.Parameter(torch.randn(d, d)) for d in dims])
-#         for w in self.weights:
-#             nn.init.xavier_uniform_(w)
-
-#     def forward(self, x: torch.Tensor):
-#         for idx, w in enumerate(self.weights):
-#             first_layer = idx == 0
-#             if not first_layer:
-#                 x = F.silu(x)
-#             residual = x
-#             print(idx, x.shape, w.shape, residual.shape)
-#             x = x @ w + residual
-
-#         return x
-
-
 class ResLinear(nn.Module):
     """Residual MLP with SiLU activation."""
 
@@ -82,6 +60,7 @@ class LinearProjection(nn.Module):
             self.reshape,
             self.linear,
             nn.SiLU(),
+            # TODO: add convolution
         )(x)
 
 
