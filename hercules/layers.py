@@ -18,19 +18,26 @@ class ResLinear(nn.Module):
         super(ResLinear, self).__init__()
         dims = np.array([input_size, *np.tile(hidden_size, n_hidden_layers), out_size])
         layer_sizes = list(zip(dims[:-1], dims[1:]))
-        print(f"{layer_sizes=}")
         self.weights = nn.ParameterList(
             [nn.Parameter(torch.randn(*x)) for x in layer_sizes]
         )
         self.projections = nn.ParameterList(
             [
-                nn.Parameter(torch.randn(*x)) if x[0] != x[1] else torch.eye(*x)
-                for x in layer_sizes
+                (
+                    nn.Parameter(torch.eye(in_dim, out_dim))
+                    if in_dim == out_dim
+                    else nn.Parameter(torch.randn(in_dim, out_dim))
+                )
+                for in_dim, out_dim in layer_sizes
             ]
         )
 
         for w in self.weights:
             nn.init.xavier_uniform_(w)
+
+        for idx, (in_dim, out_dim) in enumerate(layer_sizes):
+            if in_dim != out_dim:
+                nn.init.xavier_uniform_(self.projections[idx])
 
     def forward(self, x: torch.Tensor):
         for idx, (w, p) in enumerate(zip(self.weights, self.projections)):
@@ -38,9 +45,6 @@ class ResLinear(nn.Module):
             if not first_layer:
                 x = F.silu(x)
             residual = x
-            print(idx)
-            print(x.shape, w.shape)
-            print(residual.shape, p.shape)
             x = x @ w + residual @ p
 
         return x

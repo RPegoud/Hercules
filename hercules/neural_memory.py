@@ -16,6 +16,7 @@ class NeuralMemory(nn.Module):
         output_dim: int,
         n_hidden_layers: int,
         learning_rate: float,
+        weight_decay: float,
         max_adaptive_lr: float,
         meta_memory_dim: int,
         num_attention_heads: int,
@@ -28,6 +29,7 @@ class NeuralMemory(nn.Module):
         self.output_dim = output_dim
         self.n_hidden_layers = n_hidden_layers
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.max_adaptive_lr = max_adaptive_lr
         self.meta_memory_dim = meta_memory_dim
         self.num_attention_heads = num_attention_heads
@@ -131,27 +133,35 @@ class NeuralMemory(nn.Module):
         per_chunk_grads, _ = per_chunk_grad_fn(dict(params), k, v, adaptive_lr)
         per_chunk_grads = TensorDict(per_chunk_grads)
 
-        for name, param in self.lmm.named_parameters():
-            if per_chunk_grads.get(name) is not None:
-                grad = per_chunk_grads[name].mean(dim=0)  # average per chunk
-                past_momentum = momentum_dict[name]
+        with torch.no_grad():  # Disable grad for test-time updates
+            for name, param in self.lmm.named_parameters():
+                if per_chunk_grads.get(name) is not None:
+                    grad = per_chunk_grads[name].mean(dim=0)  # average per chunk
+                    momentum = momentum_dict[name].clone()
 
-                alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
-                theta_t = adaptive_lr.mean(dim=[1, 2, 3])
-                eta_t = adaptive_momentum.mean(dim=[1, 2, 3])
+                    alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
+                    theta_t = adaptive_lr.mean(dim=[1, 2, 3])
+                    eta_t = adaptive_momentum.mean(dim=[1, 2, 3])
 
-                alpha_t = flatten_and_expand(alpha_t, 2)
-                eta_t = flatten_and_expand(eta_t, 2)
-                theta_t = flatten_and_expand(theta_t, 2)
+                    alpha_t = flatten_and_expand(alpha_t, grad.dim())
+                    eta_t = flatten_and_expand(eta_t, grad.dim())
+                    theta_t = flatten_and_expand(theta_t, grad.dim())
 
-                past_momentum = past_momentum.mul(eta_t)
-                momentum = past_momentum.sub(theta_t * grad)
-                param = param * (1 - alpha_t) + momentum
+                    # Momentum update: S_t = η_t * S_{t-1} - θ_t * grad
+                    momentum.mul_(eta_t)
+                    momentum.sub_(
+                        theta_t * grad + self.weight_decay * param
+                    )  # TODO: is weight decay required here?
 
-                buffer_name = f"momentum_{name.replace('.', '_')}"
-                getattr(self, buffer_name).copy_(momentum.mean(dim=0))
+                    # Parameter update: M_t = (1 - α_t) * M_{t-1} + S_t
+                    new_param = param * (1.0 - alpha_t) + momentum
+                    param.data.copy_(new_param.mean(0))
+
+                    buffer_name = f"momentum_{name.replace('.', '_')}"
+                    getattr(self, buffer_name).copy_(momentum.mean(dim=0))
 
         retrieved = self.lmm(q.squeeze())
+        retrieved = F.silu(retrieved)
         retrieved = self.swa(retrieved)
 
         # discard meta-memory and padding
