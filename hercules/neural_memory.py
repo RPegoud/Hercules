@@ -1,10 +1,11 @@
-from .layers import ResLinear, LinearProjection, AdaptiveWeight, SlidingWindowAttention
 import torch
 import torch.nn as nn
-from torch.func import functional_call, vmap
-from tensordict import TensorDict
 import torch.nn.functional as F
-from .utils import l2_norm, flatten_and_expand
+from tensordict import TensorDict
+from torch.func import functional_call, vmap
+
+from .layers import AdaptiveWeight, LinearProjection, ResLinear, SlidingWindowAttention
+from .utils import flatten_and_expand, l2_norm
 
 
 class NeuralMemory(nn.Module):
@@ -16,7 +17,6 @@ class NeuralMemory(nn.Module):
         output_dim: int,
         n_hidden_layers: int,
         learning_rate: float,
-        weight_decay: float,
         max_adaptive_lr: float,
         meta_memory_dim: int,
         num_attention_heads: int,
@@ -29,7 +29,6 @@ class NeuralMemory(nn.Module):
         self.output_dim = output_dim
         self.n_hidden_layers = n_hidden_layers
         self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
         self.max_adaptive_lr = max_adaptive_lr
         self.meta_memory_dim = meta_memory_dim
         self.num_attention_heads = num_attention_heads
@@ -149,9 +148,7 @@ class NeuralMemory(nn.Module):
 
                     # Momentum update: S_t = η_t * S_{t-1} - θ_t * grad
                     momentum.mul_(eta_t)
-                    momentum.sub_(
-                        theta_t * grad + self.weight_decay * param
-                    )  # TODO: is weight decay required here?
+                    momentum.sub_(theta_t * grad)
 
                     # Parameter update: M_t = (1 - α_t) * M_{t-1} + S_t
                     new_param = param * (1.0 - alpha_t) + momentum

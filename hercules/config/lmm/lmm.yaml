@@ -1,1 +1,10 @@
-layer_sizes: [32, 32, 32]
+input_dim: 128
+hidden_dim: 256
+output_dim: 128
+n_hidden_layers: 3
+meta_memory_dim: 16
+learning_rate: 4e-4
+max_adaptive_lr: 1e-2
+num_attention_heads: 4
+attention_window_size: 32
+n_chunks: 4

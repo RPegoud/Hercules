@@ -1,5 +1,7 @@
 defaults:
   - lmm: lmm
+  - proxy_llama: proxy_llama
+  - memory_llama: memory_llama
 
 hydra:
   searchpath:
