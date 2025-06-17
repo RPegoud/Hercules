@@ -1,0 +1,31 @@
+# Memory
+du -hsc * | sort -h
+du -hsc .[^.]* | sort -h
+
+# Check torch
+torch.cuda.is_available()
+
+# nvidia-watch
+watch -n0.5 nvidia-smi
+
+# select single GPU
+CUDA_VISIBLE_DEVICES=1 python test.py
+
+# RUN CONTAINER
+apptainer shell --writable --fakeroot optimizer_container
+. optimizer-venv/bin/activate
+
+apt --purge remove '*nvidia*'
+apt-get install -y nvidia-utils-550
+
+
+# To start tmux session:
+tmux 
+
+
+# To connect to previous tmux session:
+tmux a
+
+
+
+python3 sft_train.py +experiment=sft_train
