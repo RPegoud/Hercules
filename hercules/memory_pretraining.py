@@ -1,11 +1,13 @@
 import hydra
 import torch
 import torch.nn as nn
+from accelerate import Accelerator
 from colorama import Fore, Style
+from dotenv import dotenv_values
 from omegaconf import DictConfig, OmegaConf
-from transformers import LlamaConfig, LlamaForCausalLM
+from transformers import AutoModelForCausalLM, LlamaConfig, LlamaForCausalLM
 
-from hercules import NeuralMemory, inject_memory_module, log_config
+from hercules import MemoryLlama, log_config
 
 
 @hydra.main(
@@ -17,18 +19,28 @@ def main(cfg: DictConfig):
     OmegaConf.set_struct(cfg, False)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     log_config(cfg_dict)
-    print(cfg_dict.keys)
 
-    device = torch.device("mps")
+    accelerator = Accelerator()
+    device = accelerator.device
 
-    llama_config = LlamaConfig(**cfg.proxy_llama)
+    cfg.memory_llama["token"] = dotenv_values(".env")["HF_TOKEN"]
 
-    llama = LlamaForCausalLM(llama_config)
-    memory_module = NeuralMemory(**cfg.lmm)
+    model = MemoryLlama(neural_memory_config=cfg.lmm, **cfg.memory_llama)
+    model.to(device)
 
-    model = inject_memory_module(llama, memory_module)
-    model.lm_head = nn.Linear(cfg.proxy_llama.layer_size, cfg.proxy_llama.vocab_size)
+    print(torch.cuda.is_available())
 
 
 if __name__ == "__main__":
     main()
+
+
+# train_dataloader = ...
+# model, train_dataloader = accelerator.prepare(model, train_dataloader)
+
+# for batch in train_dataloader:
+#     outputs = model(**batch)
+#     loss = ...
+#     accelerator.backward(loss)
+#     optimizer.step()
+#     optimizer.zero_grad()

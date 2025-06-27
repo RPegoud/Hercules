@@ -2,6 +2,9 @@
 outputs
 .vscode
 ~
+vllm*
+*.sif
+build-temp*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

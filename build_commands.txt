@@ -1,9 +1,15 @@
 ########################################################################################
 ################## Reasoning-agents, VLLM 0.6, pytorch 2.6 #############################
 ########################################################################################
-apptainer pull --tmpdir ~/apptainer_tmp docker://drikster80/vllm-hercules-aarch64-openai:v0.6.1
-apptainer build --sandbox vllm-hercules-aarch64 vllm-hercules-aarch64-openai_v0.6.1.sif
+apptainer pull --tmpdir ~/apptainer_tmp docker://drikster80/vllm-aarch64-openai:v0.6.1
+apptainer build --sandbox vllm-hercules-aarch64 vllm-aarch64-openai_v0.6.1.sif
 apptainer shell --fakeroot --nv vllm-hercules-aarch64
+
+# last used 
+apptainer pull --tmpdir ~/apptainer_tmp vllm-hercules-aarch64.sif docker://drikster80/vllm-aarch64-openai:v0.6.1
+apptainer build vllm-hercules-aarch64 vllm-hercules-aarch64.sif
+apptainer shell --fakeroot --nv vllm-hercules-aarch64.sif
+
 
 # optional
 MAX_JOBS=32 python -m pip -v install flash-attn --no-build-isolation

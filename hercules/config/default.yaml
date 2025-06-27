@@ -5,4 +5,4 @@ defaults:
 
 hydra:
   searchpath:
-    - file://atlas/config
+    - file://hercules/config
