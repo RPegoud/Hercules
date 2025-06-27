@@ -19,6 +19,7 @@ dependencies = [
     "isort>=6.0.1",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.3",
+    "nltk>=3.9.1",
     "optimum-quanto>=0.2.7",
     "ruff>=0.9.8",
     "safetensors>=0.5.3",
@@ -33,15 +34,3 @@ dev = [
     "ipykernel>=6.29.5",
 ]
 
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu127"
-explicit = true
-
-[tool.uv.sources]
-torch = [
-  { index = "pytorch-cu127", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-torchvision = [
-  { index = "pytorch-cu127", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]

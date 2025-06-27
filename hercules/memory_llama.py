@@ -34,7 +34,6 @@ class MemoryLlama(nn.Module):
             device_map=device_map,
             token=token,
         )
-        self.tokenizer = AutoModelForCausalLM.from_pretrained(llama_hf_path)
         self.config = llama.config
 
         if freeze_llama_layers:
