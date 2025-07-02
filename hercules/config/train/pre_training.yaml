@@ -1,4 +1,5 @@
 epochs: 1
-batch_size: 8
-outer_learning_rate: 3e-4 # LR for the main optimizer (trains proxy + projections)
+batch_size: 2
 sample_size: 512 # max number of tokens in sample
+task_name: "2k" # the maximal sequence length of the Babilong samples
+split: "qa1" # the Babilong split

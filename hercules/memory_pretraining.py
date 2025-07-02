@@ -1,6 +1,4 @@
 import hydra
-import torch
-import torch.nn as nn
 from accelerate import Accelerator
 from colorama import Fore, Style
 from datasets import load_dataset
@@ -10,7 +8,17 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-from hercules import MemoryLlama, log_config
+from hercules import BabilongCollator, MemoryLlama, log_config
+
+TASK_TO_MAX_LEN = {
+    "0k": 0,
+    "1k": 1024,
+    "2k": 2048,
+    "4k": 4096,
+    "8k": 8192,
+    "16k": 16384,
+    "32k": 32768,
+}
 
 
 @hydra.main(
@@ -22,7 +30,8 @@ def main(cfg: DictConfig):
     OmegaConf.set_struct(cfg, False)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     log_config(cfg_dict)
-    cfg.memory_llama["token"] = dotenv_values(".env")["HF_TOKEN"]
+    cfg.memory_llama["hf_token"] = dotenv_values(".env")["HF_TOKEN"]
+    MAX_SEQ_LEN = TASK_TO_MAX_LEN[cfg.train.task_name]
 
     model = MemoryLlama(neural_memory_config=cfg.lmm, **cfg.memory_llama)
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
@@ -36,44 +45,48 @@ def main(cfg: DictConfig):
         f"{Style.BRIGHT}{Fore.RED}Accelerator state:\n{accelerator.state}{Style.RESET_ALL}"
     )
 
-    train_ds = load_dataset("RMT-team/babilong-train-5k-samples", "2k", split="qa1")
-    train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size)
-    total_loss = 0
+    collate_fn = BabilongCollator(tokenizer, max_length=MAX_SEQ_LEN)
+    train_ds = load_dataset(
+        "RMT-team/babilong-train-5k-samples",
+        name=cfg.train.task_name,
+        split=cfg.train.split,
+    )
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=cfg.train.batch_size,
+        collate_fn=collate_fn,
+        num_workers=cfg.train.batch_size,
+    )
+
+    llm_losses, memory_losses = [], []
+
+    # initialize model before calling prepare
+    for b in train_loader:
+        b = b.to(device)
+        model(**b)
+        break
 
     model, train_loader = accelerator.prepare(model, train_loader)
 
     for epoch in tqdm(range(cfg.train.epochs)):
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.train.epochs}")
+        epoch_llm_loss, epoch_memory_loss = 0, 0
 
         for batch in train_loader:
-            inputs = batch["input"]
-            questions = batch["question"]
-            targets = batch["target"]
+            batch = batch.to(device)  # keys: ["input_ids", "attention_mask", "labels"]
+            outputs = model(**batch)
 
-            prompts = tokenizer(
-                [f"{i}, Question: {q}, Answer:" for i, q in zip(inputs, questions)],
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt",
-            )
-            labels = tokenizer(targets, return_tensors="pt")
+            unwrapped_model = accelerator.unwrap_model(model)
+            memory_loss = unwrapped_model.neural_memory.associative_loss
+            memory_losses.append(memory_loss)
+            epoch_memory_loss += memory_loss
 
-            input_ids = prompts["input_ids"].to(device)
-            attention_mask = prompts["attention_mask"].to(device)
+            llm_loss = outputs.loss.item()
+            llm_losses.append(llm_loss)
+            epoch_llm_loss += llm_loss
 
-            batch_inputs = {"input_ids": batch, "labels": batch}
-            # outputs = model(
-            #     input_ids=input_ids,
-            #     attention_mask=attention_mask,
-            #     labels=input_ids,  # we are not training the llm here
-            # )
-
-            # outputs = model(**batch_inputs)
-            # loss = outputs.loss
-
-            # total_loss += loss.item()
-            # progress_bar.set_postfix({"loss": loss.item()})  # noqa: F821
-            break
+        progress_bar.set_postfix({"llm loss": llm_loss, "memory loss": llm_loss})
+        break
 
 
 if __name__ == "__main__":

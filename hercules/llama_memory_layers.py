@@ -18,7 +18,6 @@ class LlamaMemoryAsLayer(nn.Module):
         self.lmm = lmm
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
-        print(f"Llama inputs: {hidden_states.shape}")
         with torch.set_grad_enabled(self.training):
             llama_output = self.original_layer(
                 hidden_states, attention_mask=attention_mask, **kwargs

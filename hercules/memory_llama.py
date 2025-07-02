@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from colorama import Fore, Style
 from dotenv import dotenv_values
-from transformers import LlamaForCausalLM  # , QuantoConfig
+from transformers import LlamaForCausalLM, QuantoConfig
 
 from hercules import NeuralMemory, inject_memory_module, log_memory_model
 
@@ -17,15 +17,23 @@ class MemoryLlama(nn.Module):
         freeze_llama_layers: bool,
         neural_memory_config: dict,
         memory_layer_ids: Union[int, list, tuple],
-        token: str,
+        quantize: bool,
+        hf_token: str,
     ):
         super(MemoryLlama, self).__init__()
 
+        if quantize:
+            quantization_config = QuantoConfig(weights="int8")
+        else:
+            quantization_config = None
+
         llama = LlamaForCausalLM.from_pretrained(
             llama_hf_path,
-            token=token,
+            token=hf_token,
             torch_dtype=torch.float16,
+            quantization_config=quantization_config,
         )
+        self.quantization_config = quantization_config
         self.config = llama.config
 
         if freeze_llama_layers:
@@ -38,6 +46,8 @@ class MemoryLlama(nn.Module):
         self.neural_memory_config = neural_memory_config
         self.neural_memory_config["input_dim"] = self.config.hidden_size
         self.neural_memory = NeuralMemory(**neural_memory_config)
+        # ensures the memory module uses the same precision as the quantized llama
+        self.neural_memory.to(torch.float16)
 
         self.model = inject_memory_module(
             self.llama,

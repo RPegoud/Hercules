@@ -5,7 +5,15 @@ from tensordict import TensorDict
 from torch.func import functional_call, vmap
 
 from .layers import AdaptiveWeight, LinearProjection, ResLinear, SlidingWindowAttention
-from .utils import flatten_and_expand, l2_norm
+
+
+def flatten_and_expand(x: torch.Tensor, n: int):
+    """Flattens a tensor and adds `n` trailing dimensions."""
+    return x.view(-1, *([1] * n))
+
+
+def l2_norm(x: torch.Tensor) -> torch.Tensor:
+    return F.normalize(x, dim=-1)
 
 
 class NeuralMemory(nn.Module):
@@ -35,6 +43,7 @@ class NeuralMemory(nn.Module):
         self.attention_window_size = attention_window_size
         self.n_chunks = n_chunks
         self.added_padding = None
+        self.associative_loss = None
 
         self.lmm = ResLinear(input_dim, hidden_dim, output_dim, n_hidden_layers)
         self.key_projection = LinearProjection(input_dim, output_dim, n_chunks)
@@ -108,7 +117,8 @@ class NeuralMemory(nn.Module):
         preds = functional_call(self.lmm, params, inputs)
         loss = F.mse_loss(preds, targets, reduction="none").mean(dim=-1)
         weighted_loss = loss * adaptive_lr.squeeze()
-        return weighted_loss.sum(), loss
+        total_loss = weighted_loss.sum()
+        return total_loss, loss
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         params = self.lmm.named_parameters()
@@ -129,8 +139,12 @@ class NeuralMemory(nn.Module):
 
         grad_fn = torch.func.grad(self._associative_memory_loss, has_aux=True)
         per_chunk_grad_fn = vmap(grad_fn, in_dims=(None, 1, 1, 1))
-        per_chunk_grads, _ = per_chunk_grad_fn(dict(params), k, v, adaptive_lr)
+        per_chunk_grads, associative_loss = per_chunk_grad_fn(
+            dict(params), k, v, adaptive_lr
+        )
         per_chunk_grads = TensorDict(per_chunk_grads)
+
+        self.associative_loss = associative_loss
 
         with torch.no_grad():  # Disable grad for test-time updates
             for name, param in self.lmm.named_parameters():
