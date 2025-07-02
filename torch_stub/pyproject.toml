@@ -1,0 +1,3 @@
+[project]
+name = "torch"
+version = "2.4.0a0+3bcc3cddb5.nv24.07"

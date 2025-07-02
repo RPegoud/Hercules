@@ -1,0 +1,53 @@
+Bootstrap: docker
+From: drikster80/vllm-aarch64-openai:v0.6.1
+
+%files
+    requirements.txt /opt/project/requirements.txt
+
+%environment
+    export VIRTUAL_ENV="/opt/project/.venv"
+    export PATH="$VIRTUAL_ENV/bin:$PATH"
+    
+    export PATH="/root/.local/bin:$PATH"
+
+%post
+    # This script runs once during the container build process.
+
+    echo "--> Installing build tools and uv..."
+    apt-get update
+    apt-get install -y build-essential python3-dev
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+    curl -Ls https://astral.sh/uv/install.sh | bash
+
+    echo "--> Setting up project directory..."
+    mkdir -p /opt/project/fake_torch_package
+
+    # --- 3. Create the "Fake" Torch Stub Package ---
+    # This tricks uv's resolver into using the system's torch.
+    echo "--> Creating torch stub package..."
+    cat <<EOF > /opt/project/fake_torch_package/pyproject.toml
+
+[project]
+name = "torch"
+version = "2.4.0a0+3bcc3cddb5.nv24.07"
+EOF
+
+    # --- 4. Create Virtual Environment ---
+    echo "--> Creating virtual environment..."
+    # Use --system-site-packages to inherit the container's GPU-enabled torch
+    /root/.local/bin/uv venv /opt/project/.venv --system-site-packages
+
+    # --- 5. Install Dependencies Safely ---
+    # Define the full path to the python executable in our new venv
+    VENV_PYTHON="/opt/project/.venv/bin/python"
+
+    echo "--> Installing torch stub into venv..."
+    /root/.local/bin/uv pip --python $VENV_PYTHON install -e /opt/project/fake_torch_package
+
+    echo "--> Installing dependencies from requirements.txt..."
+    /root/.local/bin/uv pip --python $VENV_PYTHON install -r /opt/project/requirements.txt
+
+    # --- 6. Clean Up ---
+    echo "--> Cleaning up build files..."
+    rm -rf /opt/project/fake_torch_package

@@ -1,10 +1,11 @@
 from collections import Counter
 from typing import Union
 
+import torch
 import torch.nn as nn
 from colorama import Fore, Style
 from dotenv import dotenv_values
-from transformers import AutoModelForCausalLM, QuantoConfig
+from transformers import LlamaForCausalLM  # , QuantoConfig
 
 from hercules import NeuralMemory, inject_memory_module, log_memory_model
 
@@ -16,23 +17,14 @@ class MemoryLlama(nn.Module):
         freeze_llama_layers: bool,
         neural_memory_config: dict,
         memory_layer_ids: Union[int, list, tuple],
-        quantize: bool,
         token: str,
-        device_map: Union[str, dict],
     ):
         super(MemoryLlama, self).__init__()
 
-        if quantize:
-            quantization_config = QuantoConfig(weights="int8")
-        else:
-            quantization_config = None
-
-        self.quantization_config = quantization_config
-        llama = AutoModelForCausalLM.from_pretrained(
+        llama = LlamaForCausalLM.from_pretrained(
             llama_hf_path,
-            quantization_config=quantization_config,
-            device_map=device_map,
             token=token,
+            torch_dtype=torch.float16,
         )
         self.config = llama.config
 

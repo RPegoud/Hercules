@@ -1,9 +1,12 @@
 ########################################################################################
 ################## Reasoning-agents, VLLM 0.6, pytorch 2.6 #############################
 ########################################################################################
+rm -rf ~/.local/lib/python* ~/.local/bin
 apptainer pull --tmpdir ~/apptainer_tmp docker://drikster80/vllm-aarch64-openai:v0.6.1
 apptainer build --sandbox vllm-hercules-aarch64 vllm-aarch64-openai_v0.6.1.sif
 apptainer shell --fakeroot --nv vllm-hercules-aarch64
+
+# install using python3 -m pip install
 
 # last used 
 apptainer pull --tmpdir ~/apptainer_tmp vllm-hercules-aarch64.sif docker://drikster80/vllm-aarch64-openai:v0.6.1
