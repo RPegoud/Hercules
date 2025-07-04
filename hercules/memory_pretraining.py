@@ -1,5 +1,9 @@
+import json
+
 import hydra
-from accelerate import Accelerator
+import numpy as np
+import torch
+from accelerate import Accelerator, DistributedDataParallelKwargs
 from colorama import Fore, Style
 from datasets import load_dataset
 from dotenv import dotenv_values
@@ -33,11 +37,18 @@ def main(cfg: DictConfig):
     cfg.memory_llama["hf_token"] = dotenv_values(".env")["HF_TOKEN"]
     MAX_SEQ_LEN = TASK_TO_MAX_LEN[cfg.train.task_name]
 
-    model = MemoryLlama(neural_memory_config=cfg.lmm, **cfg.memory_llama)
+    model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
+    optimizer = torch.optim.AdamW(
+        model.neural_memory.parameters(),
+        lr=cfg.train.learning_rate,
+        weight_decay=cfg.train.weight_decay,
+    )
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
 
-    accelerator = Accelerator()
+    # ignores the frozen parameters (i.e. llama params)
+    accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
+    accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs])
     device = accelerator.device
 
     model.to(device)
@@ -55,38 +66,64 @@ def main(cfg: DictConfig):
         train_ds,
         batch_size=cfg.train.batch_size,
         collate_fn=collate_fn,
-        num_workers=cfg.train.batch_size,
+        num_workers=8,
     )
 
-    llm_losses, memory_losses = [], []
+    model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
-    # initialize model before calling prepare
-    for b in train_loader:
-        b = b.to(device)
-        model(**b)
-        break
-
-    model, train_loader = accelerator.prepare(model, train_loader)
+    losses = {"causal": {}, "associative": {}}
 
     for epoch in tqdm(range(cfg.train.epochs)):
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.train.epochs}")
-        epoch_llm_loss, epoch_memory_loss = 0, 0
+        for batch in tqdm(train_loader):
+            epoch_associative_losses = []
+            epoch_causal_losses = []
 
-        for batch in train_loader:
-            batch = batch.to(device)  # keys: ["input_ids", "attention_mask", "labels"]
-            outputs = model(**batch)
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(output_hidden_states=True, **batch)
 
+            # unwrap the model to access the loss function
             unwrapped_model = accelerator.unwrap_model(model)
-            memory_loss = unwrapped_model.neural_memory.associative_loss
-            memory_losses.append(memory_loss)
-            epoch_memory_loss += memory_loss
+            attn_outputs_for_loss = outputs.hidden_states[
+                unwrapped_model.memory_layer_id
+            ]
+            memory_loss = unwrapped_model.neural_memory.get_associative_memory_loss(
+                attn_outputs_for_loss
+            )
 
-            llm_loss = outputs.loss.item()
-            llm_losses.append(llm_loss)
-            epoch_llm_loss += llm_loss
+            accelerator.backward(memory_loss)
 
-        progress_bar.set_postfix({"llm loss": llm_loss, "memory loss": llm_loss})
-        break
+            optimizer.step()
+            optimizer.zero_grad()
+
+            causal_loss = outputs.loss
+
+            gathered_causal_losses = accelerator.gather_for_metrics(causal_loss)
+            gathered_memory_losses = accelerator.gather_for_metrics(memory_loss)
+
+            epoch_causal_losses.append(gathered_causal_losses.mean().item())
+            epoch_associative_losses.append(gathered_memory_losses.mean().item())
+
+        if accelerator.is_main_process:
+            avg_causal_loss = sum(epoch_causal_losses) / len(epoch_causal_losses)
+            avg_associative_loss = sum(epoch_associative_losses) / len(
+                epoch_associative_losses
+            )
+
+            losses["causal"][epoch] = avg_causal_loss
+            losses["associative"][epoch] = avg_associative_loss
+
+            loss_msg = f"Causal loss: {avg_causal_loss:.4e}, Associative loss: {avg_associative_loss:.4e}"
+            print(
+                f"{Style.BRIGHT}{Fore.YELLOW}Epoch {epoch}: {loss_msg}{Style.RESET_ALL}"
+            )
+
+    # if accelerator.is_main_process:
+    #     print("--> Saving final model...")
+    #     unwrapped_model = accelerator.unwrap_model(model)
+    #     torch.save(unwrapped_model.neural_memory.state_dict(), "../final_model.pth")
+    #     print("--> Done!")
+
+    print(losses)
 
 
 if __name__ == "__main__":
