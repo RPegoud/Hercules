@@ -5,6 +5,11 @@ from transformers import PreTrainedTokenizerBase
 
 
 class BabilongCollator:
+    """
+    Handles the preprocessing of Babilong sequences.
+    Returns batch of input_ids, masked labels and attention masks.
+    """
+
     def __init__(self, tokenizer: PreTrainedTokenizerBase, max_length: int):
         self.tokenizer = tokenizer
         self.max_length = max_length

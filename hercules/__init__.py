@@ -2,7 +2,6 @@
 from hercules.layers import (
     ResLinear,
     LinearProjection,
-    AdaptiveWeight,
     SlidingWindowAttention,
 )
 from hercules.neural_memory import NeuralMemory

@@ -38,13 +38,7 @@ def inject_memory_module(
     memory_module: NeuralMemory,
     layer_id: Union[int, list, tuple],
 ) -> LlamaForCausalLM:
-    if isinstance(layer_id, int):
-        original_layer = llama.model.layers[layer_id]
-        llama.model.layers[layer_id] = LlamaMemoryAsLayer(original_layer, memory_module)
-
-    elif isinstance(layer_id, (list, tuple)):
-        for id in layer_id:
-            original_layer = llama.model.layers[id]
-            llama.model.layers[id] = LlamaMemoryAsLayer(original_layer, memory_module)
+    original_layer = llama.model.layers[layer_id]
+    llama.model.layers[layer_id] = LlamaMemoryAsLayer(original_layer, memory_module)
 
     return llama
