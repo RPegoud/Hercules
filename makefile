@@ -12,15 +12,12 @@ MOUNT_DIR=$(shell pwd)
 build:
 	apptainer build --sandbox $(SIF_NAME) $(DEF_FILE)
 
-shell:
-	apptainer shell --fakeroot --nv $(SIF_NAME)
-
 jupyter:
 	apptainer exec --nv --bind $(MOUNT_DIR):/opt/project $(SIF_NAME) \
 			jupyter lab --ip=0.0.0.0 --port=$(CONTAINER_PORT) --no-browser --allow-root --notebook-dir=/opt/project	
 
-pt:
-	uv run -m hercules.memory_pretraining
+shell:
+	apptainer shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem $(SIF_NAME)
 
 gpu_pt:
 	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining

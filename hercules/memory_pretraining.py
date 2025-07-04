@@ -48,8 +48,10 @@ def main(cfg: DictConfig):
 
     # ignores the frozen parameters (i.e. llama params)
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
-    accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs])
+    accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs], log_with="wandb")
     device = accelerator.device
+
+    accelerator.init_trackers(project_name="Hercules", config=cfg_dict)
 
     model.to(device)
     print(
@@ -71,13 +73,14 @@ def main(cfg: DictConfig):
 
     model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
-    losses = {"causal": {}, "associative": {}}
-
     for epoch in tqdm(range(cfg.train.epochs)):
-        for batch in tqdm(train_loader):
-            epoch_associative_losses = []
-            epoch_causal_losses = []
+        progress_bar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{cfg.train.epochs}",
+            disable=not accelerator.is_main_process,
+        )
 
+        for it, batch in enumerate(progress_bar):
             batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(output_hidden_states=True, **batch)
 
@@ -95,35 +98,18 @@ def main(cfg: DictConfig):
             optimizer.step()
             optimizer.zero_grad()
 
-            causal_loss = outputs.loss
+            causal_loss = outputs.loss.item()
 
-            gathered_causal_losses = accelerator.gather_for_metrics(causal_loss)
-            gathered_memory_losses = accelerator.gather_for_metrics(memory_loss)
-
-            epoch_causal_losses.append(gathered_causal_losses.mean().item())
-            epoch_associative_losses.append(gathered_memory_losses.mean().item())
-
-        if accelerator.is_main_process:
-            avg_causal_loss = sum(epoch_causal_losses) / len(epoch_causal_losses)
-            avg_associative_loss = sum(epoch_associative_losses) / len(
-                epoch_associative_losses
+            accelerator.log(
+                {
+                    "causal_loss": causal_loss,
+                    "associative_loss": memory_loss.item(),
+                    "epoch": epoch,
+                    "step": it,
+                }
             )
 
-            losses["causal"][epoch] = avg_causal_loss
-            losses["associative"][epoch] = avg_associative_loss
-
-            loss_msg = f"Causal loss: {avg_causal_loss:.4e}, Associative loss: {avg_associative_loss:.4e}"
-            print(
-                f"{Style.BRIGHT}{Fore.YELLOW}Epoch {epoch}: {loss_msg}{Style.RESET_ALL}"
-            )
-
-    # if accelerator.is_main_process:
-    #     print("--> Saving final model...")
-    #     unwrapped_model = accelerator.unwrap_model(model)
-    #     torch.save(unwrapped_model.neural_memory.state_dict(), "../final_model.pth")
-    #     print("--> Done!")
-
-    print(losses)
+    accelerator.end_training()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-epochs: 5
+epochs: 10
 batch_size: 8
 learning_rate: 4e-4
 weight_decay: 0.1 
