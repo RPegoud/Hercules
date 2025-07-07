@@ -19,5 +19,8 @@ jupyter:
 shell:
 	apptainer shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem $(SIF_NAME)
 
-gpu_pt:
-	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining
+pt:
+	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining $(ARGS)
+
+control:
+	uv run accelerate launch --multi_gpu -m hercules.babilong_control_experiment

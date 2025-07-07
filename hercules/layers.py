@@ -5,6 +5,27 @@ import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 
 
+class DepthwiseSeparableConv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1):
+        super().__init__()
+        padding = (kernel_size - 1) // 2
+        self.depthwise = nn.Conv1d(
+            in_channels,
+            in_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            groups=in_channels,
+        )
+        self.pointwise = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return nn.Sequential(
+            self.depthwise,
+            self.pointwise,
+        )(x)
+
+
 class ResLinear(nn.Module):
     """Residual MLP with SiLU activation."""
 
@@ -50,44 +71,43 @@ class ResLinear(nn.Module):
         return x
 
 
-class DepthwiseSeparableConv1d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1):
-        super().__init__()
-        padding = (kernel_size - 1) // 2
-        self.depthwise = nn.Conv1d(
-            in_channels,
-            in_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            groups=in_channels,
-        )
-        self.pointwise = nn.Conv1d(in_channels, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        return nn.Sequential(
-            self.depthwise,
-            self.pointwise,
-        )(x)
-
-
 class LinearProjection(nn.Module):
     """Linear layer with no bias."""
 
-    def __init__(self, in_dim: int, out_dim: int, kernel_size) -> None:
+    def __init__(
+        self, in_dim: int, out_dim: int, n_chunks: int, kernel_size: int = None
+    ) -> None:
         super(LinearProjection, self).__init__()
+        self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         nn.init.xavier_uniform_(self.linear.weight)
-        self.depthwise_separable_conv = DepthwiseSeparableConv1d(
-            in_dim, out_dim, kernel_size
-        )
+        # self.depthwise_separable_conv = DepthwiseSeparableConv1d(
+        #     in_dim, out_dim, kernel_size
+        # )
 
     def forward(self, x: torch.Tensor):
         return nn.Sequential(
+            self.reshape,
             self.linear,
             nn.SiLU(),
             # self.depthwise_separable_conv, # TODO: needs fixing
         )(x)
+
+
+class AdaptiveWeight(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, n_chunks: int, max_weight: float):
+        super(AdaptiveWeight, self).__init__()
+        self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.max_weight = max_weight
+
+    def forward(self, x: torch.Tensor):
+        lr = nn.Sequential(
+            self.reshape,
+            self.linear,
+            nn.Sigmoid(),
+        )(x)
+        return lr * self.max_weight  # rescale lr
 
 
 class SlidingWindowAttention(nn.Module):

@@ -5,6 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "einops>=0.8.1",
+    "tensordict>=0.8.3",
+    "tyro>=0.9.26",
     "wandb>=0.21.0",
 ]
 

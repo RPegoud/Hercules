@@ -1,7 +1,7 @@
 import torch.nn as nn
 from transformers import LlamaForCausalLM, QuantoConfig
 
-from hercules import NeuralMemory, inject_memory_module, log_memory_model
+from hercules import NeuralMemory, inject_memory_module
 
 
 class MemoryLlama(nn.Module):
@@ -50,8 +50,6 @@ class MemoryLlama(nn.Module):
             self.neural_memory,
             layer_id=memory_layer_id,
         )
-
-        log_memory_model(self.model)
 
     def forward(self, input_ids, attention_mask, labels, **kwargs):
         return self.model(

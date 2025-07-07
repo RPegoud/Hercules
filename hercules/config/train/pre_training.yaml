@@ -1,7 +1,8 @@
-epochs: 10
+epochs: 1
 batch_size: 8
 learning_rate: 4e-4
 weight_decay: 0.1 
-sample_size: 512 # max number of tokens in sample
-task_name: "2k" # the maximal sequence length of the Babilong samples
-split: "qa1" # the Babilong split
+train_task_name: "2k" # the maximal sequence length of the Babilong samples
+test_task_name: "2k"
+train_split: "qa1" # the Babilong split
+test_split: "qa1"

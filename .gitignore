@@ -8,6 +8,7 @@ build-temp*
 source
 data
 wandb
+docs 
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

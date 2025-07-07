@@ -6,6 +6,6 @@ from hercules.layers import (
 )
 from hercules.neural_memory import NeuralMemory
 from hercules.llama_memory_layers import LlamaMemoryAsLayer, inject_memory_module
-from hercules.logger import log_config, log_memory_model
+from hercules.logger import Logger
 from hercules.memory_llama import MemoryLlama
 from hercules.proc import BabilongCollator
