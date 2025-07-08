@@ -128,7 +128,7 @@ class NeuralMemory(nn.Module):
         k = self.key_projection(x)
         v = self.value_projection(x)
 
-        q, k = l2_norm(q), l2_norm(k)
+        q, k = l2_norm, l2_norm(k)
         momentum_dict = self._get_momentum_dict(x.size(0), x.device)
 
         adaptive_lr = self.adaptive_lr_projection(x)
@@ -142,7 +142,6 @@ class NeuralMemory(nn.Module):
         )
         per_chunk_grads = TensorDict(per_chunk_grads)
         self.last_associative_loss = per_chunk_loss.detach().mean()
-        
 
         with torch.no_grad():  # Disable grad for test-time updates
             for name, param in self.memory_module.named_parameters():

@@ -2,26 +2,31 @@ Bootstrap: docker
 From: drikster80/vllm-aarch64-openai:v0.6.1
 
 %files
+    # Using a requirements.txt file for this example
     requirements.txt /opt/project/requirements.txt
 
 %environment
+    # This section correctly sets the environment for when the container is RUN.
+    # It effectively "activates" the venv for you.
     export VIRTUAL_ENV="/opt/project/.venv"
     export PATH="$VIRTUAL_ENV/bin:$PATH"
-    export PATH="/root/.local/bin:$PATH"
+    # We no longer need to add /root/.local/bin to the PATH
 
 %post
+    # This script runs once during the container BUILD process.
+
     echo "--> Installing build tools and uv..."
-    apt-get update
-    apt-get install -y build-essential python3-dev
-    apt-get clean
-    rm -rf /var/lib/apt/lists/*
+    apt-get update -y && apt-get install -y build-essential python3-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
     curl -Ls https://astral.sh/uv/install.sh | bash
+
+    echo "--> Moving uv to /usr/local/bin..."
     mv /root/.local/bin/uv /usr/local/bin/uv
     mv /root/.local/bin/uvx /usr/local/bin/uvx
 
     echo "--> Setting up project directory..."
     mkdir -p /opt/project/fake_torch_package
 
+    # --- Create the "Fake" Torch Stub Package ---
     echo "--> Creating torch stub package..."
     cat <<EOF > /opt/project/fake_torch_package/pyproject.toml
 [project]
@@ -31,18 +36,18 @@ EOF
 
     # --- Create Virtual Environment ---
     echo "--> Creating virtual environment..."
-    /root/.local/bin/uv venv /opt/project/.venv --system-site-packages
+    # Now we can just use `uv` directly as it's in the system PATH
+    uv venv /opt/project/.venv --system-site-packages
 
     # --- Install Dependencies Safely ---
-    # Define the full path to the python executable in our new venv
     VENV_PYTHON="/opt/project/.venv/bin/python"
 
     echo "--> Installing torch stub into venv..."
-    # Explicitly tell uv which python/venv to use for the installation.
-    /root/.local/bin/uv pip install --python $VENV_PYTHON -e /opt/project/fake_torch_package
+    # We can also just use `uv` here now
+    uv pip install --python $VENV_PYTHON -e /opt/project/fake_torch_package
 
     echo "--> Installing dependencies from requirements.txt..."
-    /root/.local/bin/uv pip install --python $VENV_PYTHON -r /opt/project/requirements.txt
+    uv pip install --python $VENV_PYTHON -r /opt/project/requirements.txt
 
     # --- Clean Up ---
     echo "--> Cleaning up build files..."
