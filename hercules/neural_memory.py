@@ -1,3 +1,5 @@
+from typing import List, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -73,17 +75,30 @@ class NeuralMemory(nn.Module):
         self.register_buffer("last_associative_loss", torch.tensor(0.0))
         self._initialize_momentum_buffers()
 
-    def _initialize_momentum_buffers(self):
+    @property
+    def gate_parameters(self) -> List[nn.Parameter]:
+        """
+        The forget gate, adaptive learning rate and momentum are trained with ``backward()`` at train time
+        The memory module in itself (residual MLP) is trained at inference time using a custom logic that's
+        not compatible with ``backward()``
+        """
+        return [
+            p
+            for n, p in self.named_parameters()
+            if not n.startswith("memory_module.") and p.requires_grad
+        ]
+
+    def _initialize_momentum_buffers(self) -> None:
         """Initialize momentum states as buffers for each LMM parameter."""
         for name, param in self.memory_module.named_parameters():
             self.register_buffer(
                 f"momentum_{name.replace('.', '_')}", torch.zeros_like(param)
             )
 
-    def _get_momentum_dict(self, batch_size, device):
+    def _get_momentum_dict(self, batch_size, device) -> TensorDict:
         """Return a dictionary of momentum states, reshaped for batch processing."""
         momentum_dict = {}
-        for name, param in self.memory_module.named_parameters():
+        for name, _ in self.memory_module.named_parameters():
             buffer_name = f"momentum_{name.replace('.', '_')}"
             momentum = getattr(self, buffer_name)
             # Expand to match batch size
@@ -111,7 +126,7 @@ class NeuralMemory(nn.Module):
         inputs: torch.Tensor,
         targets: torch.Tensor,
         adaptive_lr: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         preds = functional_call(self.memory_module, params, inputs)
         loss = F.mse_loss(preds, targets, reduction="none").mean(dim=-1)
         weighted_loss = loss * adaptive_lr.squeeze()
@@ -128,7 +143,7 @@ class NeuralMemory(nn.Module):
         k = self.key_projection(x)
         v = self.value_projection(x)
 
-        q, k = l2_norm, l2_norm(k)
+        q, k = l2_norm(q), l2_norm(k)
         momentum_dict = self._get_momentum_dict(x.size(0), x.device)
 
         adaptive_lr = self.adaptive_lr_projection(x)
