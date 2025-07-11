@@ -1,7 +1,9 @@
 import json
+from datetime import datetime
 
 from accelerate import Accelerator
 from colorama import Fore, Style, init
+from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM
 
 COLORS_TO_FORE = {
@@ -57,3 +59,28 @@ class Logger:
         self.log("Memory Llama", "blue", **kwargs)
         self.log(f"Trainable parameters: {trainable:.3e}", "blue", "normal", **kwargs)
         self.log(f"Frozen parameters: {frozen:.3e}", "blue", "normal", **kwargs)
+
+    def set_experiment_name(self, cfg, cfg_dict: DictConfig) -> None:
+        if cfg.experiment.log_experiment:
+            self.ts = datetime.now().strftime("%m-%d_%H-%M")
+            if cfg.experiment.use_global_split:
+                run_name = (
+                    f"{self.ts}__global_split_{cfg.experiment.global_split_test_size}"
+                )
+                self.log(
+                    f"Using global train/test split with test size: {cfg.experiment.global_split_test_size}",
+                    "yellow",
+                )
+            else:
+                run_name = f"{self.ts}__train_{cfg.experiment.train_splits}__test_{cfg.experiment.test_splits}"
+                self.log(
+                    f"""Using specific train/test splits:
+            Train: {cfg.experiment.train_splits}
+            Test: {cfg.experiment.test_splits}""",
+                    "yellow",
+                )
+            self.accelerator.init_trackers(
+                project_name="Hercules",
+                config=cfg_dict,
+                init_kwargs={"wandb": {"name": run_name}},
+            )

@@ -1,7 +1,7 @@
 defaults:
   - neural_memory: neural_memory
   - memory_llama: memory_llama
-  - train: babilong_pt
+  - experiment: babilong_pt
 
 hydra:
   searchpath:

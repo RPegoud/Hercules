@@ -1,95 +1,19 @@
 import os
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Tuple
 
 import hydra
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from datasets import load_dataset
 from dotenv import dotenv_values
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-from hercules import BabilongCollator, Logger, MemoryLlama
-
-ALL_BABILONG_SPLITS = [
-    "qa1",
-    "qa2",
-    "qa3",
-    "qa4",
-    "qa5",
-    "qa6",
-    "qa7",
-    "qa8",
-    "qa9",
-    "qa10",
-]
-TASK_TO_MAX_LEN = {  # Babilong task lenghts
-    "0k": 0,
-    "1k": 1024,
-    "2k": 2048,
-    "4k": 4096,
-    "8k": 8192,
-    "16k": 16384,
-    "32k": 32768,
-}
-
-
-def _get_test_splits(cfg: DictConfig) -> List[str]:
-    """Determines which test splits to use based on the config."""
-    if cfg.train.test_split == "all":
-        return [ts for ts in ALL_BABILONG_SPLITS if ts != cfg.train.train_split]
-    elif isinstance(cfg.train.test_split, str):
-        return [cfg.train.test_split]
-    elif cfg.train.test_split is None:  # if not eval is requested
-        return []
-    else:
-        return list(cfg.train.test_split)
-
-
-def _get_loaders(
-    cfg: DictConfig, tokenizer: AutoTokenizer
-) -> Tuple[DataLoader, Dict[str, DataLoader]]:
-    """ """
-    train_collate_fn = BabilongCollator(
-        tokenizer, max_length=TASK_TO_MAX_LEN[cfg.train.train_task_name]
-    )
-    test_collate_fn = BabilongCollator(
-        tokenizer, max_length=TASK_TO_MAX_LEN[cfg.train.test_task_name]
-    )
-
-    train_ds = load_dataset(
-        "RMT-team/babilong-train-5k-samples",
-        name=cfg.train.train_task_name,
-        split=cfg.train.train_split,
-    )
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg.train.batch_size,
-        collate_fn=train_collate_fn,
-        num_workers=8,
-        shuffle=True,
-    )
-
-    test_splits = _get_test_splits(cfg)
-    test_loaders = {}
-    if test_splits:
-        full_test_ds = load_dataset(
-            "RMT-team/babilong-train-5k-samples",
-            name=cfg.train.test_task_name,
-        )
-        for split in test_splits:
-            if split in full_test_ds:
-                test_loaders[split] = DataLoader(
-                    full_test_ds[split],
-                    batch_size=cfg.train.batch_size,
-                    collate_fn=test_collate_fn,
-                    num_workers=8,
-                )
-    return train_loader, test_loaders
+from hercules import (
+    Logger,
+    MemoryLlama,
+    get_global_split_dataloaders,
+    get_specific_split_dataloaders,
+)
 
 
 @hydra.main(
@@ -108,34 +32,26 @@ def main(cfg: DictConfig):
     OmegaConf.set_struct(cfg, False)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     cfg.memory_llama["hf_token"] = dotenv_values(".env")["HF_TOKEN"]
-
-    if cfg.train.log_experiment:
-        run_name = cfg.train.run_name if cfg.train.run_name else None
-        accelerator.init_trackers(
-            project_name="Hercules",
-            config=cfg_dict,
-            init_kwargs={"wandb": {"name": run_name}},
-        )
+    logger.set_experiment_name(cfg, cfg_dict)
 
     # --- model and tokenizer setup ---
     model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
     model.to(device)
 
     optimizer = torch.optim.AdamW(
-        # model.neural_memory.gate_parameters,
-        [
-            p
-            for n, p in model.neural_memory.named_parameters()
-            if not n.startswith("memory_module.") and p.requires_grad
-        ],
-        lr=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
+        model.neural_memory.gate_parameters,
+        lr=cfg.experiment.learning_rate,
+        weight_decay=cfg.experiment.weight_decay,
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
 
     # --- get loaders and prepare ---
-    train_loader, test_loaders = _get_loaders(cfg, tokenizer)
+    if cfg.experiment.use_global_split:
+        train_loader, test_loaders = get_global_split_dataloaders(cfg, tokenizer)
+    else:
+        train_loader, test_loaders = get_specific_split_dataloaders(cfg, tokenizer)
+
     model, optimizer, train_loader, *prepared_test_loaders = accelerator.prepare(
         model, optimizer, train_loader, *test_loaders.values()
     )
@@ -151,16 +67,16 @@ def main(cfg: DictConfig):
 
     logger.log("Training phase:", "cyan")
     logger.log(
-        f"Task: {cfg.train.train_task_name}, Split: {cfg.train.train_split}",
+        f"Task: {cfg.experiment.train_task_name}, Split: {cfg.experiment.train_splits}",
         "cyan",
         style="normal",
     )
     model.train()
 
-    for epoch in tqdm(range(cfg.train.epochs)):
+    for epoch in tqdm(range(cfg.experiment.epochs)):
         progress_bar = tqdm(
             train_loader,
-            desc=f"Epoch {epoch+1}/{cfg.train.epochs}",
+            desc=f"Epoch {epoch+1}/{cfg.experiment.epochs}",
             disable=not accelerator.is_main_process,
         )
 
@@ -175,7 +91,7 @@ def main(cfg: DictConfig):
 
             train_causal_loss = loss.item()
 
-            if accelerator.is_main_process and cfg.train.log_experiment:
+            if accelerator.is_main_process and cfg.experiment.log_experiment:
                 accelerator.log(
                     {
                         "train_causal_loss": train_causal_loss,
@@ -194,7 +110,7 @@ def main(cfg: DictConfig):
                 disable=not accelerator.is_main_process,
             )
             logger.log(
-                f"Task: {cfg.train.test_task_name}, Split: {test_split}",
+                f"Task: {cfg.experiment.test_task_name}, Split: {test_split}",
                 "cyan",
                 style="normal",
             )
@@ -203,7 +119,7 @@ def main(cfg: DictConfig):
                 outputs = model(**batch)
                 test_causal_loss = outputs.loss.item()
 
-                if accelerator.is_main_process and cfg.train.log_experiment:
+                if accelerator.is_main_process and cfg.experiment.log_experiment:
                     accelerator.log(
                         {
                             f"test_causal_loss_{test_split}": test_causal_loss,
@@ -212,13 +128,12 @@ def main(cfg: DictConfig):
                         }
                     )
 
-    if cfg.train.log_experiment:
+    if cfg.experiment.log_experiment:
         accelerator.end_training()
 
-    if cfg.train.save_model:
+    if cfg.experiment.save_model:
         m = accelerator.unwrap_model(model)
-        ts = datetime.now().strftime("%m-%d_%H-%M")
-        save_dir = os.path.join("models", ts)
+        save_dir = os.path.join("models", logger.ts)
         os.makedirs(save_dir, exist_ok=True)
         torch.save(m.neural_memory, os.path.join(save_dir, "neural_memory.pt"))
         logger.log(f"Saved Neural Memory Module under: {save_dir}", "green")

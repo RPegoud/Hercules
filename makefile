@@ -23,7 +23,9 @@ pt: # pre-training on Babilong
 	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining 
 
 pt_ls: # pre-training with wandb loging and model saving
-	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining train.save_model=True train.log_experiment=True
+	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining \
+	experiment.save_model=True \
+	experiment.log_experiment=True
 
 control: # control experiment (babilong without neural memory)
 	uv run accelerate launch --multi_gpu -m hercules.babilong_control_experiment
