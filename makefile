@@ -19,5 +19,13 @@ jupyter:
 shell:
 	apptainer shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem $(SIF_NAME)
 
-gpu_pt:
-	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining
+pt: # pre-training on Babilong
+	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining 
+
+pt_ls: # pre-training with wandb loging and model saving
+	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining \
+	experiment.save_model=True \
+	experiment.log_experiment=True
+
+control: # control experiment (babilong without neural memory)
+	uv run accelerate launch --multi_gpu -m hercules.babilong_control_experiment

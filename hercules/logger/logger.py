@@ -1,23 +1,86 @@
 import json
+from datetime import datetime
 
+from accelerate import Accelerator
 from colorama import Fore, Style, init
+from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM
 
+COLORS_TO_FORE = {
+    "GREEN": Fore.GREEN,
+    "BLUE": Fore.BLUE,
+    "RED": Fore.RED,
+    "CYAN": Fore.CYAN,
+    "YELLOW": Fore.YELLOW,
+    "WHITE": Fore.WHITE,
+}
 
-def log_config(config: dict):
-    init(autoreset=True)
-    print(f"{Fore.GREEN}{Style.BRIGHT}Config:")
-    print(
-        f"{Fore.GREEN}{Style.BRIGHT}Hyperparameters:"
-        f"{Style.NORMAL}{json.dumps(config, sort_keys=True, indent=4)}{Style.RESET_ALL}"
-    )
+STR_TO_STYLE = {
+    "BRIGHT": Style.BRIGHT,
+    "NORMAL": Style.NORMAL,
+}
 
 
-def log_memory_model(model: AutoModelForCausalLM):
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    print(
-        f"""{Fore.BLUE}{Style.BRIGHT}Memory Llama:"
-{Style.NORMAL}Trainable parameters: {trainable:.3e}
-Frozen parameters: {frozen:.3e}{Style.RESET_ALL}"""
-    )
+class Logger:
+    def __init__(self, accelerator: Accelerator = None):
+        self.accelerator = accelerator
+        init(autoreset=True)
+
+    def log(
+        self,
+        message: str,
+        color: str = "white",
+        style: str = "bright",
+        main_process: bool = True,  # ensures the message is logged a single time when accelerate is used
+    ):
+
+        if self.accelerator.is_main_process:
+            print(
+                f"{COLORS_TO_FORE[color.upper()]}{STR_TO_STYLE[style.upper()]}{message}"
+            )
+        else:
+            if not main_process:
+                print(
+                    f"{COLORS_TO_FORE[color.upper()]}{STR_TO_STYLE[style.upper()]}{message}"
+                )
+
+    def log_config(self, config: dict, **kwargs):
+        self.log("Config:", "green", **kwargs)
+        self.log(
+            f"{json.dumps(config, sort_keys=True, indent=4)}",
+            "green",
+            "normal",
+            **kwargs,
+        )
+
+    def log_memory_model(self, model: AutoModelForCausalLM, **kwargs):
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+        self.log("Memory Llama", "blue", **kwargs)
+        self.log(f"Trainable parameters: {trainable:.3e}", "blue", "normal", **kwargs)
+        self.log(f"Frozen parameters: {frozen:.3e}", "blue", "normal", **kwargs)
+
+    def set_experiment_name(self, cfg, cfg_dict: DictConfig) -> None:
+        if cfg.experiment.log_experiment:
+            self.ts = datetime.now().strftime("%m-%d_%H-%M")
+            if cfg.experiment.use_global_split:
+                run_name = (
+                    f"{self.ts}__global_split_{cfg.experiment.global_split_test_size}"
+                )
+                self.log(
+                    f"Using global train/test split with test size: {cfg.experiment.global_split_test_size}",
+                    "yellow",
+                )
+            else:
+                run_name = f"{self.ts}__train_{cfg.experiment.train_splits}__test_{cfg.experiment.test_splits}"
+                self.log(
+                    f"""Using specific train/test splits:
+            Train: {cfg.experiment.train_splits}
+            Test: {cfg.experiment.test_splits}""",
+                    "yellow",
+                )
+            self.accelerator.init_trackers(
+                project_name="Hercules",
+                config=cfg_dict,
+                init_kwargs={"wandb": {"name": run_name}},
+            )

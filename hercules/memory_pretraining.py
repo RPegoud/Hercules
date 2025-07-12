@@ -1,28 +1,19 @@
-import json
+import os
 
 import hydra
-import numpy as np
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from colorama import Fore, Style
-from datasets import load_dataset
 from dotenv import dotenv_values
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-from hercules import BabilongCollator, MemoryLlama, log_config
-
-TASK_TO_MAX_LEN = {
-    "0k": 0,
-    "1k": 1024,
-    "2k": 2048,
-    "4k": 4096,
-    "8k": 8192,
-    "16k": 16384,
-    "32k": 32768,
-}
+from hercules import (
+    Logger,
+    MemoryLlama,
+    get_global_split_dataloaders,
+    get_specific_split_dataloaders,
+)
 
 
 @hydra.main(
@@ -31,85 +22,121 @@ TASK_TO_MAX_LEN = {
     version_base="1.3",
 )
 def main(cfg: DictConfig):
+    # --- accelerator setup ---
+    accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
+    accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs], log_with="wandb")
+    device = accelerator.device
+    logger = Logger(accelerator=accelerator)
+
+    # --- config setup ---
     OmegaConf.set_struct(cfg, False)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    log_config(cfg_dict)
     cfg.memory_llama["hf_token"] = dotenv_values(".env")["HF_TOKEN"]
-    MAX_SEQ_LEN = TASK_TO_MAX_LEN[cfg.train.task_name]
+    logger.set_experiment_name(cfg, cfg_dict)
 
+    # --- model and tokenizer setup ---
     model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
+    model.to(device)
+
     optimizer = torch.optim.AdamW(
-        model.neural_memory.parameters(),
-        lr=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
+        model.neural_memory.gate_parameters,
+        lr=cfg.experiment.learning_rate,
+        weight_decay=cfg.experiment.weight_decay,
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # ignores the frozen parameters (i.e. llama params)
-    accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
-    accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs], log_with="wandb")
-    device = accelerator.device
+    # --- get loaders and prepare ---
+    if cfg.experiment.use_global_split:
+        train_loader, test_loaders = get_global_split_dataloaders(cfg, tokenizer)
+    else:
+        train_loader, test_loaders = get_specific_split_dataloaders(cfg, tokenizer)
 
-    accelerator.init_trackers(project_name="Hercules", config=cfg_dict)
-
-    model.to(device)
-    print(
-        f"{Style.BRIGHT}{Fore.RED}Accelerator state:\n{accelerator.state}{Style.RESET_ALL}"
+    model, optimizer, train_loader, *prepared_test_loaders = accelerator.prepare(
+        model, optimizer, train_loader, *test_loaders.values()
     )
+    test_loaders = {
+        split: loader
+        for split, loader in zip(test_loaders.keys(), prepared_test_loaders)
+    }
 
-    collate_fn = BabilongCollator(tokenizer, max_length=MAX_SEQ_LEN)
-    train_ds = load_dataset(
-        "RMT-team/babilong-train-5k-samples",
-        name=cfg.train.task_name,
-        split=cfg.train.split,
+    # --- log config, model and accelerator state ---
+    logger.log_config(cfg_dict)
+    logger.log_memory_model(model)
+    logger.log(f"Accelerator state:\n{accelerator.state}", "red", main_process=False)
+
+    logger.log("Training phase:", "cyan")
+    logger.log(
+        f"Task: {cfg.experiment.train_task_name}, Split: {cfg.experiment.train_splits}",
+        "cyan",
+        style="normal",
     )
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg.train.batch_size,
-        collate_fn=collate_fn,
-        num_workers=8,
-    )
+    model.train()
 
-    model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
-
-    for epoch in tqdm(range(cfg.train.epochs)):
+    for epoch in tqdm(range(cfg.experiment.epochs)):
         progress_bar = tqdm(
             train_loader,
-            desc=f"Epoch {epoch+1}/{cfg.train.epochs}",
+            desc=f"Epoch {epoch+1}/{cfg.experiment.epochs}",
             disable=not accelerator.is_main_process,
         )
 
         for it, batch in enumerate(progress_bar):
             batch = {k: v.to(device) for k, v in batch.items()}
-            outputs = model(output_hidden_states=True, **batch)
-
-            # unwrap the model to access the loss function
-            unwrapped_model = accelerator.unwrap_model(model)
-            attn_outputs_for_loss = outputs.hidden_states[
-                unwrapped_model.memory_layer_id
-            ]
-            memory_loss = unwrapped_model.neural_memory.get_associative_memory_loss(
-                attn_outputs_for_loss
-            )
-
-            accelerator.backward(memory_loss)
+            outputs = model(**batch)
+            loss = outputs.loss
+            accelerator.backward(loss)
 
             optimizer.step()
             optimizer.zero_grad()
 
-            causal_loss = outputs.loss.item()
+            train_causal_loss = loss.item()
 
-            accelerator.log(
-                {
-                    "causal_loss": causal_loss,
-                    "associative_loss": memory_loss.item(),
-                    "epoch": epoch,
-                    "step": it,
-                }
+            if accelerator.is_main_process and cfg.experiment.log_experiment:
+                accelerator.log(
+                    {
+                        "train_causal_loss": train_causal_loss,
+                        "epoch": epoch,
+                        "step": it,
+                    }
+                )
+
+    logger.log("Test phase:", "cyan")
+
+    if test_loaders:
+        model.eval()
+        for test_split, test_loader in test_loaders.items():
+            test_progress_bar = tqdm(
+                test_loader,
+                disable=not accelerator.is_main_process,
             )
+            logger.log(
+                f"Task: {cfg.experiment.test_task_name}, Split: {test_split}",
+                "cyan",
+                style="normal",
+            )
+            for it, batch in enumerate(test_progress_bar):
+                batch = {k: v.to(device) for k, v in batch.items()}
+                outputs = model(**batch)
+                test_causal_loss = outputs.loss.item()
 
-    accelerator.end_training()
+                if accelerator.is_main_process and cfg.experiment.log_experiment:
+                    accelerator.log(
+                        {
+                            f"test_causal_loss_{test_split}": test_causal_loss,
+                            "epoch": epoch,
+                            "step": it,
+                        }
+                    )
+
+    if cfg.experiment.log_experiment:
+        accelerator.end_training()
+
+    if cfg.experiment.save_model:
+        m = accelerator.unwrap_model(model)
+        save_dir = os.path.join("models", logger.ts)
+        os.makedirs(save_dir, exist_ok=True)
+        torch.save(m.neural_memory, os.path.join(save_dir, "neural_memory.pt"))
+        logger.log(f"Saved Neural Memory Module under: {save_dir}", "green")
 
 
 if __name__ == "__main__":
