@@ -133,7 +133,7 @@ def main(cfg: DictConfig):
 
     if cfg.experiment.save_model:
         m = accelerator.unwrap_model(model)
-        save_dir = os.path.join("models", logger.ts)
+        save_dir = os.path.join("models/babilong_ft", logger.ts)
         os.makedirs(save_dir, exist_ok=True)
         torch.save(m.neural_memory, os.path.join(save_dir, "neural_memory.pt"))
         logger.log(f"Saved Neural Memory Module under: {save_dir}", "green")

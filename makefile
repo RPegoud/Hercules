@@ -19,11 +19,19 @@ jupyter:
 shell:
 	apptainer shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem $(SIF_NAME)
 
-pt: # pre-training on Babilong
-	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining 
+pt_bl: # pre-training on Babilong
+	uv run accelerate launch --multi_gpu -m hercules.bl_memory_pretraining 
 
-pt_ls: # pre-training with wandb loging and model saving
-	uv run accelerate launch --multi_gpu -m hercules.memory_pretraining \
+pt_bl_ls: # pre-training on babilong with wandb loging and model saving
+	uv run accelerate launch --multi_gpu -m hercules.bl_memory_pretraining \
+	experiment.save_model=True \
+	experiment.log_experiment=True
+
+pt_ew: # pre-training on Eduweb
+	uv run accelerate launch --multi_gpu -m hercules.eduweb_memory_pretraining 
+
+pt_ew_ls: # pre-training on babilong with wandb loging and model saving
+	uv run accelerate launch --multi_gpu -m hercules.eduweb_memory_pretraining \
 	experiment.save_model=True \
 	experiment.log_experiment=True
 

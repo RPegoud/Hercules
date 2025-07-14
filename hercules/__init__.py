@@ -8,7 +8,7 @@ from hercules.neural_memory import NeuralMemory
 from hercules.llama_memory_layers import LlamaMemoryAsLayer, inject_memory_module
 from hercules.logger import Logger
 from hercules.memory_llama import MemoryLlama
-from hercules.proc import (
+from hercules.processing import (
     BabilongCollator,
     get_specific_split_dataloaders,
     get_global_split_dataloaders,
