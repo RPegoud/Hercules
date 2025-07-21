@@ -11,6 +11,11 @@ wandb
 docs 
 models
 
+# nethack wiki
+dumps
+sqlite
+extensions
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

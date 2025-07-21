@@ -1,6 +1,7 @@
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from colorama import Fore, Style
 from tqdm import tqdm
 
 BASE_URL = "https://nethackwiki.com/wiki"
@@ -111,4 +112,6 @@ if __name__ == "__main__":
 
     if monsters != {}:
         pd.DataFrame(monsters).to_json("nethack_monsters")
-        print()
+        print(
+            f"{Fore.GREEN}{Style.BRIGHT} Collected {len(monsters.keys())} Monster stats"
+        )
