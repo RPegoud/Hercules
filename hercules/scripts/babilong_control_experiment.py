@@ -23,7 +23,7 @@ TASK_TO_MAX_LEN = {
 
 
 @hydra.main(
-    config_path="config",
+    config_path="../config",
     config_name="pre_training.yaml",
     version_base="1.3",
 )

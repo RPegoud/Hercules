@@ -63,20 +63,25 @@ class Logger:
     def set_experiment_name(self, cfg, cfg_dict: DictConfig) -> None:
         if cfg.experiment.log_experiment:
             self.ts = datetime.now().strftime("%m-%d_%H-%M")
-            if cfg.experiment.use_global_split:
-                run_name = (
-                    f"{self.ts}__global_split_{cfg.experiment.global_split_test_size}"
-                )
+            if cfg.experiment.name == "babilong_pt":
+                if cfg.experiment.use_global_split:
+                    run_name = f"global_split_{cfg.experiment.global_split_test_size}__{self.ts}"
+                    self.log(
+                        f"Using global train/test split with test size: {cfg.experiment.global_split_test_size}",
+                        "yellow",
+                    )
+                else:
+                    run_name = f"train_{cfg.experiment.train_splits}__test_{cfg.experiment.test_splits}__{self.ts}"
+                    self.log(
+                        f"""Using specific train/test splits:
+                Train: {cfg.experiment.train_splits}
+                Test: {cfg.experiment.test_splits}""",
+                        "yellow",
+                    )
+            elif cfg.experiment.name == "eduweb_pt":
+                run_name = f"{cfg.experiment.name}_{cfg.experiment.num_train_samples}__{cfg.experiment.test_splits}__{self.ts}"
                 self.log(
-                    f"Using global train/test split with test size: {cfg.experiment.global_split_test_size}",
-                    "yellow",
-                )
-            else:
-                run_name = f"{self.ts}__train_{cfg.experiment.train_splits}__test_{cfg.experiment.test_splits}"
-                self.log(
-                    f"""Using specific train/test splits:
-            Train: {cfg.experiment.train_splits}
-            Test: {cfg.experiment.test_splits}""",
+                    f"Eduweb pre-training: {cfg.experiment.num_train_samples} samples, Babilong test splits: {cfg.experiment.test_splits}",
                     "yellow",
                 )
             self.accelerator.init_trackers(

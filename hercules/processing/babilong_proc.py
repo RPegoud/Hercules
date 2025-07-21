@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any, Dict, List, Tuple, Union
 
 import torch
@@ -32,12 +33,25 @@ TASK_TO_MAX_LEN = {  # Babilong task lenghts
 class BabilongCollator:
     """Handles the preprocessing of Babilong sequences."""
 
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, max_length: int) -> None:
-        self.tokenizer = tokenizer
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        max_length: int,
+        return_prompts_for_generation: bool = False,
+    ) -> None:
         self.max_length = max_length
+        self.return_prompts_for_generation = return_prompts_for_generation
         self.IGNORE_INDEX = -100  # this token is ignored by the loss
 
-    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        self.train_tokenizer = tokenizer  # right padding for training
+
+        self.gen_tokenizer = deepcopy(tokenizer)  # left padding for generation
+        self.gen_tokenizer.padding_side = "left"
+
+    def __call__(
+        self,
+        batch: List[Dict[str, Any]],
+    ) -> Dict[str, torch.Tensor]:
         """Returns batch of input_ids, masked labels and attention masks."""
         inputs = [sample["input"] for sample in batch]
         questions = [sample["question"] for sample in batch]
@@ -52,10 +66,10 @@ class BabilongCollator:
             for i, q, t in zip(inputs, questions, targets)
         ]
 
-        prompts_tokenized = self.tokenizer(
+        tokenized_prompts = self.train_tokenizer(
             prompts_only, padding=False, truncation=False
         )
-        model_inputs = self.tokenizer(
+        model_inputs = self.train_tokenizer(
             full_texts,
             max_length=self.max_length,
             padding="max_length",
@@ -67,14 +81,27 @@ class BabilongCollator:
 
         # create labels by masking all the text and question tokens
         for i in range(len(labels)):
-            prompt_len = len(prompts_tokenized.input_ids[i])
+            prompt_len = len(tokenized_prompts.input_ids[i])
             labels[i, :prompt_len] = self.IGNORE_INDEX
 
         # mask the padding tokens
-        labels[labels == self.tokenizer.pad_token_id] = self.IGNORE_INDEX
+        labels[labels == self.train_tokenizer.pad_token_id] = self.IGNORE_INDEX
 
         model_inputs["labels"] = labels
 
+        if self.return_prompts_for_generation:
+            prompts_for_generation = self.gen_tokenizer(
+                prompts_only,
+                max_length=self.max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+            model_inputs["prompt_input_ids"] = prompts_for_generation["input_ids"]
+            model_inputs["prompt_attention_mask"] = prompts_for_generation[
+                "attention_mask"
+            ]
+            model_inputs["target_text"] = targets
         return model_inputs
 
 
@@ -99,21 +126,44 @@ def get_test_splits(cfg: DictConfig) -> List[str]:
     return _get_split_list(test_config)
 
 
-def get_specific_split_dataloaders(
-    cfg: DictConfig, tokenizer: AutoTokenizer
-) -> Tuple[DataLoader, Dict[str, DataLoader]]:
+def get_specific_split_bl_dataloaders(
+    cfg: DictConfig,
+    tokenizer: AutoTokenizer,
+    return_prompts_for_generation: bool,
+    test_only: bool = False,
+) -> Tuple[DataLoader, Dict[str, DataLoader]] | Dict[str, DataLoader]:
     """
     Creates and returns the train and test dataloaders for specific
     train and test splits.
+    If `test_only` is set to `True`, only returns a dictionary of test sets.
     """
     train_collate_fn = BabilongCollator(
         tokenizer, max_length=TASK_TO_MAX_LEN[cfg.experiment.train_task_name]
     )
     test_collate_fn = BabilongCollator(
-        tokenizer, max_length=TASK_TO_MAX_LEN[cfg.experiment.test_task_name]
+        tokenizer,
+        max_length=TASK_TO_MAX_LEN[cfg.experiment.test_task_name],
+        return_prompts_for_generation=return_prompts_for_generation,
     )
 
     train_splits = _get_split_list(cfg.experiment.train_splits)
+    if test_only:
+        test_splits = get_test_splits(cfg)
+        test_loaders = {}
+        if test_splits:
+            full_test_ds_dict = load_dataset(
+                "RMT-team/babilong-train-5k-samples", name=cfg.experiment.test_task_name
+            )
+            for split in test_splits:
+                if split in full_test_ds_dict:
+                    test_loaders[split] = DataLoader(
+                        full_test_ds_dict[split],
+                        batch_size=cfg.experiment.batch_size,
+                        collate_fn=test_collate_fn,
+                        num_workers=8,
+                    )
+        return test_loaders
+
     if not train_splits:
         raise ValueError(
             "cfg.experiment.train_splits must be configured with at least one split."
@@ -137,33 +187,27 @@ def get_specific_split_dataloaders(
         shuffle=True,
     )
 
-    test_splits = get_test_splits(cfg)
-    test_loaders = {}
-    if test_splits:
-        full_test_ds_dict = load_dataset(
-            "RMT-team/babilong-train-5k-samples", name=cfg.experiment.test_task_name
-        )
-        for split in test_splits:
-            if split in full_test_ds_dict:
-                test_loaders[split] = DataLoader(
-                    full_test_ds_dict[split],
-                    batch_size=cfg.experiment.batch_size,
-                    collate_fn=test_collate_fn,
-                    num_workers=8,
-                )
     return train_loader, test_loaders
 
 
-def get_global_split_dataloaders(
-    cfg: DictConfig, tokenizer: AutoTokenizer
+def get_global_split_bl_dataloaders(
+    cfg: DictConfig,
+    tokenizer: AutoTokenizer,
+    return_prompts_for_generation: bool,
 ) -> Tuple[DataLoader, Dict[str, DataLoader]]:
     """
     Creates and returns the train and test dataloaders using all the splits for training
     with `cfg.experiment.global_split_test_size`% held out for testing.
     """
-    collate_fn = BabilongCollator(
+    train_collate_fn = BabilongCollator(
         tokenizer, max_length=TASK_TO_MAX_LEN[cfg.experiment.train_task_name]
     )
+    test_collate_fn = BabilongCollator(
+        tokenizer,
+        max_length=TASK_TO_MAX_LEN[cfg.experiment.test_task_name],
+        return_prompts_for_generation=return_prompts_for_generation,
+    )
+
     full_dataset_dict = load_dataset(
         "RMT-team/babilong-train-5k-samples", name=cfg.experiment.train_task_name
     )
@@ -187,7 +231,7 @@ def get_global_split_dataloaders(
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.experiment.batch_size,
-        collate_fn=collate_fn,
+        collate_fn=train_collate_fn,
         num_workers=8,
         shuffle=True,
     )
@@ -195,7 +239,7 @@ def get_global_split_dataloaders(
     test_loader = DataLoader(
         test_ds,
         batch_size=cfg.experiment.batch_size,
-        collate_fn=collate_fn,
+        collate_fn=test_collate_fn,
         num_workers=8,
     )
 

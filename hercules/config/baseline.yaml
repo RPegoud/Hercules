@@ -1,7 +1,8 @@
 defaults:
+  - _self_
   - neural_memory: neural_memory
   - memory_llama: memory_llama
-  - experiment: babilong_pt
+  - experiment: baseline
 
 hydra:
   searchpath:

@@ -11,14 +11,14 @@ from transformers import AutoTokenizer
 from hercules import (
     Logger,
     MemoryLlama,
-    get_global_split_dataloaders,
-    get_specific_split_dataloaders,
+    get_global_split_bl_dataloaders,
+    get_specific_split_bl_dataloaders,
 )
 
 
 @hydra.main(
-    config_path="config",
-    config_name="pre_training.yaml",
+    config_path="../config",
+    config_name="babilong_pt.yaml",
     version_base="1.3",
 )
 def main(cfg: DictConfig):
@@ -48,9 +48,9 @@ def main(cfg: DictConfig):
 
     # --- get loaders and prepare ---
     if cfg.experiment.use_global_split:
-        train_loader, test_loaders = get_global_split_dataloaders(cfg, tokenizer)
+        train_loader, test_loaders = get_global_split_bl_dataloaders(cfg, tokenizer)
     else:
-        train_loader, test_loaders = get_specific_split_dataloaders(cfg, tokenizer)
+        train_loader, test_loaders = get_specific_split_bl_dataloaders(cfg, tokenizer)
 
     model, optimizer, train_loader, *prepared_test_loaders = accelerator.prepare(
         model, optimizer, train_loader, *test_loaders.values()
@@ -133,7 +133,7 @@ def main(cfg: DictConfig):
 
     if cfg.experiment.save_model:
         m = accelerator.unwrap_model(model)
-        save_dir = os.path.join("models/babilong_ft", logger.ts)
+        save_dir = os.path.join(f"models/{cfg.experiment.name}/", logger.ts)
         os.makedirs(save_dir, exist_ok=True)
         torch.save(m.neural_memory, os.path.join(save_dir, "neural_memory.pt"))
         logger.log(f"Saved Neural Memory Module under: {save_dir}", "green")

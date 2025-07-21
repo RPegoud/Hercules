@@ -2,7 +2,7 @@ defaults:
   - _self_
   - neural_memory: neural_memory
   - memory_llama: memory_llama
-  - experiment: eduweb_pt
+  - experiment: babilong_pt
 
 hydra:
   searchpath:

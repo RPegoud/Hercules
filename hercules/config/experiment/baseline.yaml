@@ -3,10 +3,8 @@ seed: 0
 epochs: 1
 eduweb_batch_size: 8
 batch_size: 8 # used for Babilong
-learning_rate: 4e-4
-weight_decay: 0.1 
 
-num_train_samples: 5e2 # number of eduweb samples used for training
+num_train_samples: 1e5 # number of eduweb samples used for training
 max_seq_len: 2048
 
 train_task_name: "2k" # the maximal sequence length of the Babilong samples
