@@ -17,7 +17,8 @@ jupyter:
 			jupyter lab --ip=0.0.0.0 --port=$(CONTAINER_PORT) --no-browser --allow-root --notebook-dir=/opt/project	
 
 shell:
-	apptainer shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem $(SIF_NAME)
+	apptainer shell --fakeroot --nv --writable-tmpfs --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem $(SIF_NAME)
+
 
 pt_bl: # pre-training on Babilong
 	uv run accelerate launch --multi_gpu -m hercules.scripts.bl_memory_pretraining 

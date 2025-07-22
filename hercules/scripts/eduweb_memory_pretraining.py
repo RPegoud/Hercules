@@ -2,6 +2,7 @@ import os
 import time
 from typing import Dict, Tuple
 
+import bitsandbytes as bnb
 import hydra
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
@@ -31,6 +32,7 @@ def _setup(
     Accelerator,
     Logger,
 ]:
+
     # --- accelerator setup ---
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
     accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs], log_with="wandb")
@@ -49,9 +51,8 @@ def _setup(
 
     # --- model and tokenizer setup ---
     model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
-    model.to(device)
 
-    optimizer = torch.optim.AdamW(
+    optimizer = bnb.optim.Adam8bit(
         model.neural_memory.gate_parameters,
         lr=cfg.experiment.learning_rate,
         weight_decay=cfg.experiment.weight_decay,
@@ -65,22 +66,18 @@ def _setup(
         cfg,
         tokenizer,
         test_only=True,
-        return_prompts_and_targets=cfg.experiment.eval_with_generate,
+        return_prompts_for_generation=cfg.experiment.eval_with_generate,
     )
 
-    model, optimizer, train_loader, *prepared_test_loaders = accelerator.prepare(
-        model, optimizer, train_loader, *test_loaders.values()
-    )
-    test_loaders = {
-        split: loader
-        for split, loader in zip(test_loaders.keys(), prepared_test_loaders)
-    }
+    model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
     # --- log config, model and accelerator state ---
     logger.log_config(cfg_dict)
     logger.log_memory_model(model)
     time.sleep(2)
     logger.log(f"Accelerator state:\n{accelerator.state}", "red", main_process=False)
+
+    print(torch.cuda.memory_summary(device=device))
 
     return (
         model,
@@ -112,7 +109,7 @@ def _train_one_epoch(
         disable=not accelerator.is_main_process,
     )
     for it, batch in enumerate(progress_bar):
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = {k: v for k, v in batch.items()}
         outputs = model(**batch)
         loss = outputs.loss
         accelerator.backward(loss)
@@ -158,8 +155,7 @@ def _evaluate(
 
             for it, batch in enumerate(test_progress_bar):
                 batch = {
-                    k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
+                    k: v if isinstance(v, torch.Tensor) else v for k, v in batch.items()
                 }
                 outputs = model(
                     input_ids=batch["input_ids"],
