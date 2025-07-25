@@ -1,0 +1,5 @@
+{"Armor": {"name": "Armor", "type": "armor", "ac": 3, "material": "iron"}}
+{"Magic cancellation": {"name": "Magic cancellation", "type": "armor", "ac": 3, "material": "iron"}}
+{"Shield": {"name": "Shield", "type": "armor", "ac": 3, "material": "iron"}}
+{"Shirt": {"name": "Shirt", "type": "armor", "ac": 3, "material": "iron"}}
+{"Tin foil hat": {"name": "Tin foil hat", "type": "armor", "ac": 3, "material": "iron"}}

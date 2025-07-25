@@ -1,0 +1,79 @@
+{"Aklys": {"name": "Aklys", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Athame": {"name": "Athame", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Axe": {"name": "Axe", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Bardiche": {"name": "Bardiche", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Battle-axe": {"name": "Battle-axe", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Bec de corbin": {"name": "Bec de corbin", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Bill-guisarme": {"name": "Bill-guisarme", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Boomerang": {"name": "Boomerang", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Bow": {"name": "Bow", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Broadsword": {"name": "Broadsword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Bullwhip": {"name": "Bullwhip", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Club": {"name": "Club", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Crossbow": {"name": "Crossbow", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Crossbow bolt": {"name": "Crossbow bolt", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Crysknife": {"name": "Crysknife", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Dagger": {"name": "Dagger", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Dart": {"name": "Dart", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Double damage": {"name": "Double damage", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Dwarvish mattock": {"name": "Dwarvish mattock", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Dwarvish short sword": {"name": "Dwarvish short sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Dwarvish spear": {"name": "Dwarvish spear", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Elven bow": {"name": "Elven bow", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Elven broadsword": {"name": "Elven broadsword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Elven dagger": {"name": "Elven dagger", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Elven short sword": {"name": "Elven short sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Elven spear": {"name": "Elven spear", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Fauchard": {"name": "Fauchard", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Flail": {"name": "Flail", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Flint stone": {"name": "Flint stone", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Glaive": {"name": "Glaive", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Guisarme": {"name": "Guisarme", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Halberd": {"name": "Halberd", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Javelin": {"name": "Javelin", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Katana": {"name": "Katana", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Knife": {"name": "Knife", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Lance": {"name": "Lance", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Long sword": {"name": "Long sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Lucern hammer": {"name": "Lucern hammer", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Mace": {"name": "Mace", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Martial arts": {"name": "Martial arts", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Morning star": {"name": "Morning star", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Multishot": {"name": "Multishot", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Orcish bow": {"name": "Orcish bow", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Orcish dagger": {"name": "Orcish dagger", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Orcish short sword": {"name": "Orcish short sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Orcish spear": {"name": "Orcish spear", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Partisan": {"name": "Partisan", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Weapon": {"name": "Weapon", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Polearm": {"name": "Polearm", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Pounding": {"name": "Pounding", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Projectile": {"name": "Projectile", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Quarterstaff": {"name": "Quarterstaff", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Quiver": {"name": "Quiver", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Ranged weapon": {"name": "Ranged weapon", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Ranseur": {"name": "Ranseur", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Rock": {"name": "Rock", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Rubber hose": {"name": "Rubber hose", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Runed broadsword": {"name": "Runed broadsword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Runesword": {"name": "Runesword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Scalpel": {"name": "Scalpel", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Scimitar": {"name": "Scimitar", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Short sword": {"name": "Short sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Shuriken": {"name": "Shuriken", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Silver dagger": {"name": "Silver dagger", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Silver saber": {"name": "Silver saber", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Silver spear": {"name": "Silver spear", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Sling": {"name": "Sling", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Spear": {"name": "Spear", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Spetum": {"name": "Spetum", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Stiletto": {"name": "Stiletto", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Sword": {"name": "Sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Trident": {"name": "Trident", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Tsurugi": {"name": "Tsurugi", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Two-handed sword": {"name": "Two-handed sword", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Voulge": {"name": "Voulge", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"War hammer": {"name": "War hammer", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Weapon-tool": {"name": "Weapon-tool", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Worm tooth": {"name": "Worm tooth", "type": "weapon", "damage": "1d6", "cost": 10}}
+{"Yumi": {"name": "Yumi", "type": "weapon", "damage": "1d6", "cost": 10}}
