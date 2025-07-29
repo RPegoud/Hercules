@@ -27,14 +27,14 @@ class MemoryLlama(nn.Module):
                 param.requires_grad = False
             assert sum(p.numel() for p in llama.parameters() if p.requires_grad) == 0
 
-        self.llama: LlamaForCausalLM = llama  # pre-trained llama
+        self.llama = llama  # pre-trained llama
 
         self.neural_memory_config = neural_memory_config
-        self.neural_memory_config["input_dim"] = self.config.hidden_size
+        self.neural_memory_config["mlp_config"] = llama.config
         self.neural_memory = NeuralMemory(**neural_memory_config)
         self.memory_layer_id = memory_layer_id
 
-        self.model: LlamaForCausalLM = inject_memory_module(  # memory-augmented llama
+        self.model = inject_memory_module(  # memory-augmented llama
             self.llama,
             self.neural_memory,
             layer_id=memory_layer_id,

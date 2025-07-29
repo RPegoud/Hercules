@@ -5,8 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
 from torch.func import functional_call, vmap
+from transformers import LlamaConfig
+from transformers.models.llama.modeling_llama import LlamaMLP
 
-from .layers import AdaptiveWeight, LinearProjection, ResLinear, SlidingWindowAttention
+from .layers import AdaptiveWeight, LinearProjection, SlidingWindowAttention
 
 
 def flatten_and_expand(x: torch.Tensor, n: int):
@@ -22,10 +24,7 @@ class NeuralMemory(nn.Module):
 
     def __init__(
         self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        n_hidden_layers: int,
+        mlp_config: LlamaConfig,
         max_adaptive_lr: float,
         meta_memory_dim: int,
         num_attention_heads: int,
@@ -38,37 +37,44 @@ class NeuralMemory(nn.Module):
         self.n_chunks = n_chunks
         self.added_padding = None
 
-        self.memory_module = ResLinear(
-            input_dim, hidden_dim, output_dim, n_hidden_layers
-        )
+        self.memory_module = LlamaMLP(mlp_config)
+
         self.key_projection = LinearProjection(
-            input_dim, output_dim, n_chunks, conv_kernel_size
+            mlp_config["hidden_size"],
+            mlp_config["hidden_size"],
+            n_chunks,
+            conv_kernel_size,
         )
         self.query_projection = LinearProjection(
-            input_dim, output_dim, 1, conv_kernel_size
+            mlp_config["hidden_size"], mlp_config["hidden_size"], 1, conv_kernel_size
         )
         self.value_projection = LinearProjection(
-            input_dim, output_dim, n_chunks, conv_kernel_size
+            mlp_config["hidden_size"],
+            mlp_config["hidden_size"],
+            n_chunks,
+            conv_kernel_size,
         )
 
         # α: forget gate
         self.adaptive_forget_projection = AdaptiveWeight(
-            input_dim, 1, n_chunks, max_weight=1
+            mlp_config["hidden_size"], 1, n_chunks, max_weight=1
         )
         # θ: data-dependent learning rate
         self.adaptive_lr_projection = AdaptiveWeight(
-            input_dim, 1, n_chunks, max_weight=max_adaptive_lr
+            mlp_config["hidden_size"], 1, n_chunks, max_weight=max_adaptive_lr
         )
         # η: data-dependent surprise momentum
         self.adaptive_momentum_projection = AdaptiveWeight(
-            input_dim, 1, n_chunks, max_weight=1
+            mlp_config["hidden_size"], 1, n_chunks, max_weight=1
         )
 
-        self.meta_memory = nn.Parameter(torch.randn(meta_memory_dim, input_dim))
+        self.meta_memory = nn.Parameter(
+            torch.randn(meta_memory_dim, mlp_config["hidden_size"])
+        )
         nn.init.xavier_uniform_(self.meta_memory)
 
         self.swa = SlidingWindowAttention(
-            input_dim, num_attention_heads, attention_window_size
+            mlp_config["hidden_size"], num_attention_heads, attention_window_size
         )
 
         self.momentum_states = nn.ParameterDict()
@@ -107,6 +113,7 @@ class NeuralMemory(nn.Module):
         return TensorDict(momentum_dict)
 
     def _pad_to_chunk_size(self, x: torch.Tensor) -> torch.Tensor:
+        """Adds necessary right padding for the sequence to be split in chunks."""
         seq_len = x.size(1)
         if not seq_len % self.n_chunks == 0:
             pad = (seq_len // self.n_chunks) * self.n_chunks + self.n_chunks - seq_len
@@ -115,6 +122,7 @@ class NeuralMemory(nn.Module):
         return x
 
     def _inject_meta_memory(self, x: torch.Tensor) -> torch.Tensor:
+        """Prepends the persistent memory vector to new inputs."""
         batch_size = x.size(0)
         meta_memory = self.meta_memory.expand(batch_size, -1, -1)
         meta_x = torch.concat([meta_memory, x], dim=1)
@@ -134,9 +142,10 @@ class NeuralMemory(nn.Module):
         return total_loss, loss
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        params = self.memory_module.named_parameters()
+        params_dict = dict(self.memory_module.named_parameters())
 
-        x = self._inject_meta_memory(x)
+        # TODO: the meta-memory should be frozen at test time
+        # x = self._inject_meta_memory(x)
         x = self._pad_to_chunk_size(x)
 
         q = self.query_projection(x)
@@ -153,12 +162,12 @@ class NeuralMemory(nn.Module):
         grad_fn = torch.func.grad(self._associative_memory_loss, has_aux=True)
         per_chunk_grad_fn = vmap(grad_fn, in_dims=(None, 1, 1, 1))
         per_chunk_grads, per_chunk_loss = per_chunk_grad_fn(
-            dict(params), k, v, adaptive_lr
+            params_dict, k, v, adaptive_lr
         )
         per_chunk_grads = TensorDict(per_chunk_grads)
         self.last_associative_loss = per_chunk_loss.detach().mean()
 
-        with torch.no_grad():  # Disable grad for test-time updates
+        with torch.no_grad():  # disable grad for test-time updates
             for name, param in self.memory_module.named_parameters():
                 if per_chunk_grads.get(name) is not None:
                     grad = per_chunk_grads[name].mean(dim=0)  # average per chunk
@@ -183,7 +192,8 @@ class NeuralMemory(nn.Module):
                     buffer_name = f"momentum_{name.replace('.', '_')}"
                     getattr(self, buffer_name).copy_(momentum.mean(dim=0))
 
-        retrieved = self.memory_module(q.squeeze())
+        # retrieved = self.memory_module(q.squeeze())
+        retrieved = functional_call(self.memory_module, params_dict, q.squeeze())
         retrieved = F.silu(retrieved)
         retrieved = self.swa(retrieved)
 

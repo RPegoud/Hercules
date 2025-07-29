@@ -97,7 +97,6 @@ def _train_one_epoch(
     epoch: int,
     train_loader: DataLoader,
     cfg: DictConfig,
-    device: torch.device,
     accelerator: Accelerator,
 ):
     model.train()
@@ -135,7 +134,6 @@ def _evaluate(
     test_loaders: Dict[str, DataLoader],
     cfg: DictConfig,
     accelerator: Accelerator,
-    device: torch.device,
     logger: Logger,
 ):
 
@@ -218,7 +216,6 @@ def main(cfg: DictConfig):
         optimizer,
         train_loader,
         test_loaders,
-        device,
         accelerator,
         logger,
     ) = _setup(cfg)
@@ -232,9 +229,7 @@ def main(cfg: DictConfig):
     )
 
     for epoch in tqdm(range(cfg.experiment.epochs)):
-        _train_one_epoch(
-            model, optimizer, epoch, train_loader, cfg, device, accelerator
-        )
+        _train_one_epoch(model, optimizer, epoch, train_loader, cfg, accelerator)
 
     # --- Test ---
     logger.log("--- Starting test phase ---", "cyan")
@@ -243,7 +238,7 @@ def main(cfg: DictConfig):
         "cyan",
         style="normal",
     )
-    _evaluate(model, tokenizer, test_loaders, cfg, accelerator, device, logger)
+    _evaluate(model, tokenizer, test_loaders, cfg, accelerator, logger)
 
     if cfg.experiment.log_experiment:
         accelerator.end_training()

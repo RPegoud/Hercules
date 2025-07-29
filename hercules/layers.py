@@ -127,6 +127,7 @@ class SlidingWindowAttention(nn.Module):
         attn_mask = (indices[:, None] - indices[None, :]).abs() <= (
             self.window_size // 2
         )
+        # TODO: add MLP after attention?
 
         output, _ = self.attention(x, x, x, attn_mask=attn_mask)
         return output
