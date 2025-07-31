@@ -3,7 +3,7 @@ From: drikster80/vllm-aarch64-openai:v0.6.1
 
 %files
     # Using a requirements.txt file for this example
-    requirements.txt /opt/project/requirements.txt
+    container_reqs.txt /opt/project/container_reqs.txt
 
 %environment
     # This section correctly sets the environment for when the container is RUN.
@@ -44,10 +44,10 @@ EOF
 
     echo "--> Installing torch stub into venv..."
     # We can also just use `uv` here now
-    uv pip install --python $VENV_PYTHON -e /opt/project/fake_torch_package
+    TMPDIR=/data/ucabpag/tmp uv pip install --python $VENV_PYTHON -e /opt/project/fake_torch_package
 
-    echo "--> Installing dependencies from requirements.txt..."
-    uv pip install --python $VENV_PYTHON -r /opt/project/requirements.txt
+    echo "--> Installing dependencies from container_reqs.txt..."
+    TMPDIR=/data/ucabpag/tmp uv pip install --python $VENV_PYTHON -r /opt/project/container_reqs.txt
 
     # --- Clean Up ---
     echo "--> Cleaning up build files..."

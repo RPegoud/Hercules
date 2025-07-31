@@ -63,4 +63,5 @@ def get_eduweb_dataloader(
         batch_size=cfg.experiment.eduweb_batch_size,
         collate_fn=default_data_collator,
         num_workers=4,
+        drop_last=True,
     )

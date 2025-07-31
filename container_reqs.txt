@@ -107,7 +107,7 @@ sympy==1.14.0
 tensordict==0.8.3
 tokenizers==0.21.2
 tomli==2.2.1
--e file:///home/ucabpag/Hercules/fake_torch_package
+-e file:///opt/project/fake_torch_package
 tornado==6.5.1
 tqdm==4.67.1
 traitlets==5.14.3

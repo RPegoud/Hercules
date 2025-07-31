@@ -27,20 +27,19 @@ class DepthwiseSeparableConv1d(nn.Module):
 
 
 class ResLinear(nn.Module):
-    """Residual MLP with SiLU activation."""
-
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int,
-        out_size: int,
-        n_hidden_layers: int,
-    ):
-        super(ResLinear, self).__init__()
-        dims = np.array([input_size, *np.tile(hidden_size, n_hidden_layers), out_size])
-        layer_sizes = list(zip(dims[:-1], dims[1:]))
+    def __init__(self, hidden_size: int, depth: int, expansion_factor: int):
+        super().__init__()
+        dims = [
+            hidden_size,
+            *((hidden_size * expansion_factor,) * (depth - 1)),
+            hidden_size,
+        ]
+        layer_sizes = zip(dims[:1], dims[1:])
         self.weights = nn.ParameterList(
-            [nn.Parameter(torch.randn(*x)) for x in layer_sizes]
+            [
+                nn.Parameter(torch.randn(dim_in, dim_out))
+                for dim_in, dim_out in layer_sizes
+            ]
         )
         self.projections = nn.ParameterList(
             [
@@ -53,21 +52,12 @@ class ResLinear(nn.Module):
             ]
         )
 
-        for w in self.weights:
-            nn.init.xavier_uniform_(w)
-
-        for idx, (in_dim, out_dim) in enumerate(layer_sizes):
-            if in_dim != out_dim:
-                nn.init.xavier_uniform_(self.projections[idx])
-
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         for idx, (w, p) in enumerate(zip(self.weights, self.projections)):
-            first_layer = idx == 0
-            if not first_layer:
+            if idx != 0:
                 x = F.silu(x)
             residual = x
             x = x @ w + residual @ p
-
         return x
 
 
@@ -75,38 +65,42 @@ class LinearProjection(nn.Module):
     """Linear layer with no bias."""
 
     def __init__(
-        self, in_dim: int, out_dim: int, n_chunks: int, kernel_size: int = None
+        self,
+        in_dim: int,
+        out_dim: int,
+        n_chunks: int,
     ) -> None:
         super(LinearProjection, self).__init__()
         self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         nn.init.xavier_uniform_(self.linear.weight)
-        # self.depthwise_separable_conv = DepthwiseSeparableConv1d(
-        #     in_dim, out_dim, kernel_size
-        # )
 
-    def forward(self, x: torch.Tensor):
-        return nn.Sequential(
-            self.reshape,
-            self.linear,
-            nn.SiLU(),
-            # self.depthwise_separable_conv, # TODO: needs fixing
-        )(x)
+    def forward(self, x: torch.Tensor, is_generating: bool = False):
+        if not is_generating:
+            x = self.reshape(x)
+        x = self.linear(x)
+        x = F.silu(x)
+
+        return x
 
 
 class AdaptiveWeight(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, n_chunks: int, max_weight: float):
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        n_chunks: int,
+        max_weight: float,
+    ):
         super(AdaptiveWeight, self).__init__()
         self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim)
         self.max_weight = max_weight
 
     def forward(self, x: torch.Tensor):
-        lr = nn.Sequential(
-            self.reshape,
-            self.linear,
-            nn.Sigmoid(),
-        )(x)
+        x = self.reshape(x)
+        x = self.linear(x)
+        lr = F.sigmoid(x)
         return lr * self.max_weight  # rescale lr
 
 

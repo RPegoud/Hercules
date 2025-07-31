@@ -87,5 +87,10 @@ class Logger:
             self.accelerator.init_trackers(
                 project_name="Hercules",
                 config=cfg_dict,
-                init_kwargs={"wandb": {"name": run_name}},
+                init_kwargs={
+                    "wandb": {
+                        "name": run_name,
+                        "entity": "ryan_pgd",
+                    }
+                },
             )
