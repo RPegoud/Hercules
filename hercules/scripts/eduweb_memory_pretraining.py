@@ -117,7 +117,6 @@ def _train_one_epoch(
         optimizer.zero_grad()
 
         train_causal_loss = loss.item()
-        print(f"{it}: {train_causal_loss:.3f}")
 
         if accelerator.is_main_process and cfg.experiment.log_experiment:
             accelerator.log(

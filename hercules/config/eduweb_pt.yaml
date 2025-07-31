@@ -7,7 +7,7 @@ experiment:
   learning_rate: 4e-4
   weight_decay: 0.1 
 
-  num_train_samples: 1e2 # number of eduweb samples used for training
+  num_train_samples: 1e4 # number of eduweb samples used for training
   max_seq_len: 2048
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
@@ -21,8 +21,10 @@ experiment:
   log_experiment: false
 
 neural_memory:
+  mlp_depth: 3
+  mlp_expansion_factor: 2
   max_adaptive_lr: 1e-2
-  n_chunks: 16
+  n_chunks: 512
 
 memory_llama:
   llama_hf_path: "meta-llama/Llama-3.2-1B"

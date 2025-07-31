@@ -27,20 +27,19 @@ class DepthwiseSeparableConv1d(nn.Module):
 
 
 class ResLinear(nn.Module):
-    """Residual MLP with SiLU activation."""
-
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int,
-        out_size: int,
-        n_hidden_layers: int,
-    ):
-        super(ResLinear, self).__init__()
-        dims = np.array([input_size, *np.tile(hidden_size, n_hidden_layers), out_size])
-        layer_sizes = list(zip(dims[:-1], dims[1:]))
+    def __init__(self, hidden_size: int, depth: int, expansion_factor: int):
+        super().__init__()
+        dims = [
+            hidden_size,
+            *((hidden_size * expansion_factor,) * (depth - 1)),
+            hidden_size,
+        ]
+        layer_sizes = zip(dims[:1], dims[1:])
         self.weights = nn.ParameterList(
-            [nn.Parameter(torch.randn(*x)) for x in layer_sizes]
+            [
+                nn.Parameter(torch.randn(dim_in, dim_out))
+                for dim_in, dim_out in layer_sizes
+            ]
         )
         self.projections = nn.ParameterList(
             [
@@ -53,21 +52,12 @@ class ResLinear(nn.Module):
             ]
         )
 
-        for w in self.weights:
-            nn.init.xavier_uniform_(w)
-
-        for idx, (in_dim, out_dim) in enumerate(layer_sizes):
-            if in_dim != out_dim:
-                nn.init.xavier_uniform_(self.projections[idx])
-
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         for idx, (w, p) in enumerate(zip(self.weights, self.projections)):
-            first_layer = idx == 0
-            if not first_layer:
+            if idx != 0:
                 x = F.silu(x)
             residual = x
             x = x @ w + residual @ p
-
         return x
 
 

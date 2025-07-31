@@ -31,10 +31,10 @@ class MemoryLlama(nn.Module):
 
         self.llama = llama  # pre-trained llama
 
+        neural_memory_config["hidden_size"] = llama.config.hidden_size
         self.neural_memory_config = neural_memory_config
-        self.neural_memory = NeuralMemory(
-            mlp_config=llama.config, **neural_memory_config
-        )
+
+        self.neural_memory = NeuralMemory(**neural_memory_config)
         self.memory_layer_id = memory_layer_id
 
         self.model = inject_memory_module(  # memory-augmented llama
@@ -68,10 +68,6 @@ class LlamaMemoryAsLayer(nn.Module):
         super().__init__()
         self.original_layer = original_layer
         self.neural_memory = neural_memory
-        # initialise the lmm with llama's MLP parameters
-        self.neural_memory.memory_module.load_state_dict(
-            self.original_layer.mlp.state_dict()
-        )
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
         with torch.set_grad_enabled(self.training):
