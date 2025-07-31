@@ -5,9 +5,8 @@ from hercules.layers import (
     SlidingWindowAttention,
 )
 from hercules.neural_memory import NeuralMemory
-from hercules.llama_memory_layers import LlamaMemoryAsLayer, inject_memory_module
 from hercules.logger import Logger
-from hercules.memory_llama import MemoryLlama
+from hercules.memory_llama import MemoryLlama, LlamaMemoryAsLayer, inject_memory_module
 from hercules.processing import (
     BabilongCollator,
     get_specific_split_bl_dataloaders,

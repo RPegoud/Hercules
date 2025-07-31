@@ -1,7 +1,9 @@
+import torch
 import torch.nn as nn
 from transformers import LlamaForCausalLM
+from typing import Union
 
-from hercules import NeuralMemory, inject_memory_module
+from hercules import NeuralMemory
 
 
 class MemoryLlama(nn.Module):
@@ -30,8 +32,9 @@ class MemoryLlama(nn.Module):
         self.llama = llama  # pre-trained llama
 
         self.neural_memory_config = neural_memory_config
-        self.neural_memory_config["mlp_config"] = llama.config
-        self.neural_memory = NeuralMemory(**neural_memory_config)
+        self.neural_memory = NeuralMemory(
+            mlp_config=llama.config, **neural_memory_config
+        )
         self.memory_layer_id = memory_layer_id
 
         self.model = inject_memory_module(  # memory-augmented llama
@@ -54,3 +57,49 @@ class MemoryLlama(nn.Module):
             attention_mask=attention_mask,
             **kwargs,
         )
+
+
+class LlamaMemoryAsLayer(nn.Module):
+    def __init__(
+        self,
+        original_layer: nn.Module,
+        neural_memory: NeuralMemory,
+    ):
+        super().__init__()
+        self.original_layer = original_layer
+        self.neural_memory = neural_memory
+        # initialise the lmm with llama's MLP parameters
+        self.neural_memory.memory_module.load_state_dict(
+            self.original_layer.mlp.state_dict()
+        )
+
+    def forward(self, hidden_states, attention_mask=None, **kwargs):
+        with torch.set_grad_enabled(self.training):
+            llama_output = self.original_layer(
+                hidden_states, attention_mask=attention_mask, **kwargs
+            )
+        attn_output = llama_output[0]
+        mal_output = self.neural_memory(attn_output)
+
+        assert (
+            attn_output.shape == mal_output.shape
+        ), f"Memory module output shape: {mal_output.shape}, expected {attn_output.shape}"
+
+        # replace the attention output with the memory augmented attention
+        return (mal_output,) + llama_output[1:]
+
+
+def inject_memory_module(
+    llama: LlamaForCausalLM,
+    memory_module: NeuralMemory,
+    layer_id: Union[int, list],
+) -> LlamaForCausalLM:
+    if isinstance(layer_id, list):
+        for id in layer_id:
+            original_layer = llama.model.layers[id]
+            llama.model.layers[id] = LlamaMemoryAsLayer(original_layer, memory_module)
+    else:
+        original_layer = llama.model.layers[layer_id]
+        llama.model.layers[layer_id] = LlamaMemoryAsLayer(original_layer, memory_module)
+
+    return llama

@@ -1,7 +1,7 @@
 import os
 import time
 from typing import Dict, Tuple
-
+import os
 import bitsandbytes as bnb
 import hydra
 import torch
@@ -28,21 +28,24 @@ def _setup(
     torch.optim.Optimizer,
     DataLoader,
     DataLoader,
-    torch.device,
     Accelerator,
     Logger,
 ]:
+    # --- wandb variables ---
+    env_vars = dotenv_values(".env")
+    os.environ["WANDB_API_KEY"] = env_vars["WANDB_TOKEN"]
+    os.environ["WANDB_ENTITY"] = env_vars["WANDB_ENTITY"]
+    os.environ["WANDB_PROJECT"] = env_vars["WANDB_PROJECT"]
 
     # --- accelerator setup ---
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
     accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs], log_with="wandb")
-    device = accelerator.device
     logger = Logger(accelerator=accelerator)
 
     # --- config setup ---
     OmegaConf.set_struct(cfg, False)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    cfg.memory_llama["hf_token"] = dotenv_values(".env")["HF_TOKEN"]
+    cfg.memory_llama["hf_token"] = env_vars["HF_TOKEN"]
     steps_per_epoch = int(
         cfg.experiment.num_train_samples // cfg.experiment.eduweb_batch_size
     )
@@ -60,7 +63,7 @@ def _setup(
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # --- setup dataset ---
+    # --- dataset setup ---
     train_loader = get_eduweb_dataloader(cfg, tokenizer, accelerator)
     test_loaders = get_specific_split_bl_dataloaders(
         cfg,
@@ -77,15 +80,12 @@ def _setup(
     time.sleep(2)
     logger.log(f"Accelerator state:\n{accelerator.state}", "red", main_process=False)
 
-    print(torch.cuda.memory_summary(device=device))
-
     return (
         model,
         tokenizer,
         optimizer,
         train_loader,
         test_loaders,
-        device,
         accelerator,
         logger,
     )
@@ -117,6 +117,7 @@ def _train_one_epoch(
         optimizer.zero_grad()
 
         train_causal_loss = loss.item()
+        print(f"{it}: {train_causal_loss:.3f}")
 
         if accelerator.is_main_process and cfg.experiment.log_experiment:
             accelerator.log(
@@ -151,9 +152,11 @@ def _evaluate(
                 style="normal",
             )
 
+            device = accelerator.device
             for it, batch in enumerate(test_progress_bar):
                 batch = {
-                    k: v if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
                 }
                 outputs = model(
                     input_ids=batch["input_ids"],

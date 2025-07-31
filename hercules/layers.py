@@ -75,38 +75,42 @@ class LinearProjection(nn.Module):
     """Linear layer with no bias."""
 
     def __init__(
-        self, in_dim: int, out_dim: int, n_chunks: int, kernel_size: int = None
+        self,
+        in_dim: int,
+        out_dim: int,
+        n_chunks: int,
     ) -> None:
         super(LinearProjection, self).__init__()
         self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         nn.init.xavier_uniform_(self.linear.weight)
-        # self.depthwise_separable_conv = DepthwiseSeparableConv1d(
-        #     in_dim, out_dim, kernel_size
-        # )
 
-    def forward(self, x: torch.Tensor):
-        return nn.Sequential(
-            self.reshape,
-            self.linear,
-            nn.SiLU(),
-            # self.depthwise_separable_conv, # TODO: needs fixing
-        )(x)
+    def forward(self, x: torch.Tensor, is_generating: bool = False):
+        if not is_generating:
+            x = self.reshape(x)
+        x = self.linear(x)
+        x = F.silu(x)
+
+        return x
 
 
 class AdaptiveWeight(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, n_chunks: int, max_weight: float):
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        n_chunks: int,
+        max_weight: float,
+    ):
         super(AdaptiveWeight, self).__init__()
         self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim)
         self.max_weight = max_weight
 
     def forward(self, x: torch.Tensor):
-        lr = nn.Sequential(
-            self.reshape,
-            self.linear,
-            nn.Sigmoid(),
-        )(x)
+        x = self.reshape(x)
+        x = self.linear(x)
+        lr = F.sigmoid(x)
         return lr * self.max_weight  # rescale lr
 
 
@@ -127,7 +131,6 @@ class SlidingWindowAttention(nn.Module):
         attn_mask = (indices[:, None] - indices[None, :]).abs() <= (
             self.window_size // 2
         )
-        # TODO: add MLP after attention?
 
         output, _ = self.attention(x, x, x, attn_mask=attn_mask)
         return output

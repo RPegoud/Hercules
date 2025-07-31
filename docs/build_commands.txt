@@ -2,16 +2,16 @@
 ################## Reasoning-agents, VLLM 0.6, pytorch 2.6 #############################
 ########################################################################################
 rm -rf ~/.local/lib/python* ~/.local/bin
-apptainer pull --tmpdir ~/apptainer_tmp docker://drikster80/vllm-aarch64-openai:v0.6.1
-apptainer build --sandbox vllm-hercules-aarch64 vllm-aarch64-openai_v0.6.1.sif
-apptainer shell --fakeroot --nv vllm-hercules-aarch64
+singularity pull --tmpdir ~/singularity_tmp docker://drikster80/vllm-aarch64-openai:v0.6.1
+singularity build --sandbox vllm-hercules-aarch64 vllm-aarch64-openai_v0.6.1.sif
+singularity shell --fakeroot --nv vllm-hercules-aarch64
 
 # install using python3 -m pip install
 
 # last used 
-apptainer pull --tmpdir ~/apptainer_tmp vllm-hercules-aarch64.sif docker://drikster80/vllm-aarch64-openai:v0.6.1
-apptainer build vllm-hercules-aarch64 vllm-hercules-aarch64.sif
-apptainer shell --fakeroot --nv vllm-hercules-aarch64.sif
+singularity pull --tmpdir ~/singularity_tmp vllm-hercules-aarch64.sif docker://drikster80/vllm-aarch64-openai:v0.6.1
+singularity build vllm-aarch64-openai_v0.6.1.sif container.def
+singularity shell --fakeroot --nv vllm-hercules-aarch64.sif
 
 
 # optional
@@ -19,14 +19,14 @@ MAX_JOBS=32 python -m pip -v install flash-attn --no-build-isolation
 
 
 # WANDB certificates:
-apptainer shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem vllm-hercules-aarch64
+singularity shell --fakeroot --nv --bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem vllm-hercules-aarch64
 export SSL_CERT_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
 # If things stop working, try to delete stuff in ~\.local\
 rm -rf ~/.local/lib/python* ~/.local/bin
 
 # To install JAVA
-apptainer shell --fakeroot --writable vllm-hercules-aarch64
+singularity shell --fakeroot --writable vllm-hercules-aarch64
 apt update
 apt install default-jdk
 
