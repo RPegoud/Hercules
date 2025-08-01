@@ -6,7 +6,6 @@ experiment:
   batch_size: 8 # used for Babilong
 
   num_train_samples: 1e5 # number of eduweb samples used for training
-  max_seq_len: 2048
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"

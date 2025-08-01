@@ -54,10 +54,26 @@ class Logger:
         )
 
     def log_memory_model(self, model: AutoModelForCausalLM, **kwargs):
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        trainable_memory = sum(
+            p.numel() for p in model.neural_memory.parameters() if p.requires_grad
+        )
+        trainable_llama = sum(
+            p.numel() for p in model.llama.parameters() if p.requires_grad
+        )
         frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
         self.log("Memory Llama", "blue", **kwargs)
-        self.log(f"Trainable parameters: {trainable:.3e}", "blue", "normal", **kwargs)
+        self.log(
+            f"Trainable parameters:\nMemory module: {trainable_memory:.3e}\nLlama: {trainable_llama:.3e}",
+            "blue",
+            "normal",
+            **kwargs,
+        )
+        self.log(
+            f"Total trainable parameters: {trainable_llama+trainable_memory:.3e}",
+            "blue",
+            "normal",
+            **kwargs,
+        )
         self.log(f"Frozen parameters: {frozen:.3e}", "blue", "normal", **kwargs)
 
     def set_experiment_name(self, cfg, cfg_dict: DictConfig) -> None:

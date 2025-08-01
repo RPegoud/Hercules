@@ -8,14 +8,14 @@ experiment:
   weight_decay: 0.1 
 
   num_train_samples: 1e4 # number of eduweb samples used for training
-  max_seq_len: 2048
+  num_test_it: 200
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"
   train_splits: ~ # Babilong splits used in training
   test_splits: "all" # Babilong splits used in testing
   eval_with_generate: true # whether to evaluate the model performance with `.generate()`
-  max_gen_tokens: 20 # maximum number of tokens generated for evaluation
+  max_gen_tokens: 50 # maximum number of tokens generated for evaluation
 
   save_model: false
   log_experiment: false
@@ -28,6 +28,6 @@ neural_memory:
 
 memory_llama:
   llama_hf_path: "meta-llama/Llama-3.2-1B"
-  freeze_llama_layers: true
+  trainable_blocks: [-1, -2]
   memory_layer_id: -2 # the index of the layer to augment with a memory module
 

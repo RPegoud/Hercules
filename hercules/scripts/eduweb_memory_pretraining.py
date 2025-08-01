@@ -56,7 +56,7 @@ def _setup(
     model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
 
     optimizer = bnb.optim.Adam8bit(
-        model.neural_memory.gate_parameters,
+        model.trainable_parameters,
         lr=cfg.experiment.learning_rate,
         weight_decay=cfg.experiment.weight_decay,
     )
@@ -201,9 +201,12 @@ def _evaluate(
                 metrics_to_log = {
                     f"accuracy_{test_split}": accuracy,
                     f"test_causal_loss_{test_split}": test_causal_loss,
-                    "step": it,
+                    "iteration": it,
                 }
                 accelerator.log(metrics_to_log)
+
+                if it >= cfg.experiment.num_test_it:
+                    break
 
 
 @hydra.main(
