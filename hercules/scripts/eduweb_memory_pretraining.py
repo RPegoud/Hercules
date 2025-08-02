@@ -56,7 +56,7 @@ def _setup(
     model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
 
     optimizer = bnb.optim.Adam8bit(
-        model.trainable_parameters,
+        model.neural_memory.gate_parameters,  # TODO: replace by trainable params when training llama layers
         lr=cfg.experiment.learning_rate,
         weight_decay=cfg.experiment.weight_decay,
     )
@@ -108,24 +108,25 @@ def _train_one_epoch(
         disable=not accelerator.is_main_process,
     )
     for it, batch in enumerate(progress_bar):
-        batch = {k: v for k, v in batch.items()}
-        outputs = model(**batch)
-        loss = outputs.loss
-        accelerator.backward(loss)
+        with accelerator.accumulate(model):
+            batch = {k: v for k, v in batch.items()}
+            outputs = model(**batch)
+            loss = outputs.loss
 
-        optimizer.step()
-        optimizer.zero_grad()
+            accelerator.backward(loss)
+            optimizer.step()
+            optimizer.zero_grad()
 
-        train_causal_loss = loss.item()
+            train_causal_loss = loss.item()
 
-        if accelerator.is_main_process and cfg.experiment.log_experiment:
-            accelerator.log(
-                {
-                    "eduweb_causal_loss": train_causal_loss,
-                    "epoch": epoch,
-                    "step": it,
-                }
-            )
+            if accelerator.is_main_process and cfg.experiment.log_experiment:
+                accelerator.log(
+                    {
+                        "eduweb_causal_loss": train_causal_loss,
+                        "epoch": epoch,
+                        "step": it,
+                    }
+                )
 
 
 def _evaluate(

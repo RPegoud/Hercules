@@ -65,17 +65,14 @@ class MemoryLlama(nn.Module):
 
         if self.trainable_blocks is None or not self.trainable_blocks:
             print(f"{Fore.BLUE}{Style.BRIGHT}--- All Llama blocks are frozen. ---")
-            n_trainable = (
-                sum(p.numel() for p in llama.parameters() if p.requires_grad) == 0
-            )
+            n_trainable = sum(p.numel() for p in llama.parameters() if p.requires_grad)
             assert (
                 n_trainable == 0
             ), f"Expected zero trainable parameters, got {n_trainable}"
-
             return llama
 
         if isinstance(self.trainable_blocks, int):
-            self.trainable_blocks = list(self.trainable_blocks)
+            self.trainable_blocks = list([self.trainable_blocks])
 
         print(
             f"{Fore.BLUE}{Style.BRIGHT}Unfreezing Llama blocks: {self.trainable_blocks} ..."
@@ -142,9 +139,10 @@ class LlamaMemoryAsLayer(nn.Module):
         self.neural_memory = neural_memory
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
-        llama_output = self.original_layer(
-            hidden_states, attention_mask=attention_mask, **kwargs
-        )
+        with torch.no_grads():
+            llama_output = self.original_layer(
+                hidden_states, attention_mask=attention_mask, **kwargs
+            )
         attn_output = llama_output[0]
         mal_output = self.neural_memory(attn_output)
 

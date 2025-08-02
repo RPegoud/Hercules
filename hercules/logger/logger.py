@@ -57,19 +57,21 @@ class Logger:
         trainable_memory = sum(
             p.numel() for p in model.neural_memory.parameters() if p.requires_grad
         )
+
+        # these include the memory parameters
         trainable_llama = sum(
             p.numel() for p in model.llama.parameters() if p.requires_grad
         )
         frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
         self.log("Memory Llama", "blue", **kwargs)
         self.log(
-            f"Trainable parameters:\nMemory module: {trainable_memory:.3e}\nLlama: {trainable_llama:.3e}",
+            f"Trainable parameters:\nMemory module: {trainable_memory:.3e}\nLlama: {trainable_llama-trainable_memory:.3e}",
             "blue",
             "normal",
             **kwargs,
         )
         self.log(
-            f"Total trainable parameters: {trainable_llama+trainable_memory:.3e}",
+            f"Total trainable parameters: {trainable_llama:.3e}",
             "blue",
             "normal",
             **kwargs,

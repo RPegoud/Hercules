@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 from torch.func import functional_call, vmap
 
-from .layers import AdaptiveWeight, LinearProjection, SlidingWindowAttention, ResLinear
+from .layers import AdaptiveWeight, LinearProjection, ResLinear
 
 
 def flatten_and_expand(x: torch.Tensor, n: int):
@@ -25,30 +25,24 @@ class NeuralMemory(nn.Module):
         mlp_depth: int,
         mlp_expansion_factor: int,
         max_adaptive_lr: float,
-        n_chunks: int,
     ) -> None:
         super(NeuralMemory, self).__init__()
-        self.n_chunks = n_chunks
         self.added_padding = None
 
         self.memory_module = ResLinear(hidden_size, mlp_depth, mlp_expansion_factor)
 
-        self.query_projection = LinearProjection(hidden_size, hidden_size, 1)
-        self.key_projection = LinearProjection(hidden_size, hidden_size, n_chunks)
-        self.value_projection = LinearProjection(hidden_size, hidden_size, n_chunks)
+        self.query_projection = LinearProjection(hidden_size, 1)
+        self.key_projection = LinearProjection(hidden_size, 1)
+        self.value_projection = LinearProjection(hidden_size, 1)
 
         # α: forget gate
-        self.adaptive_forget_projection = AdaptiveWeight(
-            hidden_size, 1, n_chunks, max_weight=1
-        )
+        self.adaptive_forget_projection = AdaptiveWeight(hidden_size, 1, max_weight=1.0)
         # θ: data-dependent learning rate
         self.adaptive_lr_projection = AdaptiveWeight(
-            hidden_size, 1, n_chunks, max_weight=max_adaptive_lr
+            hidden_size, 1, max_weight=max_adaptive_lr
         )
         # η: data-dependent surprise momentum
-        self.adaptive_momentum_projection = AdaptiveWeight(
-            hidden_size, 1, n_chunks, max_weight=1
-        )
+        self.adaptive_momentum_projection = AdaptiveWeight(hidden_size, 1, max_weight=1)
 
         self.momentum_states = nn.ParameterDict()
         self._initialize_momentum_buffers()
@@ -73,102 +67,102 @@ class NeuralMemory(nn.Module):
                 f"momentum_{name.replace('.', '_')}", torch.zeros_like(param)
             )
 
-    def _get_momentum_dict(self, batch_size) -> TensorDict:
+    @staticmethod
+    def _add_batch_dim(x: torch.Tensor) -> torch.Tensor:
+        """Adds a batch dimension to the input if missing."""
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        return x
+
+    def _get_momentum_dict(self, batch_size: int) -> TensorDict:
         """Return a dictionary of momentum states, reshaped for batch processing."""
         momentum_dict = {}
         for name, _ in self.memory_module.named_parameters():
             buffer_name = f"momentum_{name.replace('.', '_')}"
             momentum = getattr(self, buffer_name)
-            # Expand to match batch size
-            momentum = momentum.expand(batch_size, *momentum.shape)  # .to(device)
+            momentum = momentum.expand(batch_size, *momentum.shape)
             momentum_dict[name] = momentum
         return TensorDict(momentum_dict)
-
-    def _pad_to_chunk_size(self, x: torch.Tensor) -> torch.Tensor:
-        """Adds necessary right padding for the sequence to be split in chunks."""
-        seq_len = x.size(1)
-        if not seq_len % self.n_chunks == 0:
-            pad = (seq_len // self.n_chunks) * self.n_chunks + self.n_chunks - seq_len
-            self.added_padding = -pad
-            x = F.pad(x, (0, 0, 0, pad))
-        return x
-
-    @staticmethod
-    def _add_batch_dim(x: torch.Tensor) -> torch.Tensor:
-        """Adds a batch dimension to the input if needed"""
-        if x.dim() == 2:
-            x = x.unsqueeze(0)
-        return x
 
     def _associative_memory_loss(
         self,
         params: TensorDict,
-        inputs: torch.Tensor,
-        targets: torch.Tensor,
-        adaptive_lr: torch.Tensor,
+        k_t: torch.Tensor,
+        v_t: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        preds = functional_call(self.memory_module, params, inputs)
-        loss = F.mse_loss(preds, targets, reduction="none").mean(dim=-1)
-        weighted_loss = loss * adaptive_lr.squeeze()
-        total_loss = weighted_loss.sum()
-        return total_loss, loss
+        preds = functional_call(self.memory_module, params, k_t)
+        return F.mse_loss(preds, v_t)
+
+    def _update_step(
+        self,
+        x_t: torch.Tensor,
+        params_t: dict[str, torch.Tensor],
+        momentum_t: dict[str, torch.Tensor],
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        v_t = self.value_projection(x_t)
+        k_t = self.key_projection(x_t)
+        k_t = l2_norm(k_t)
+
+        lr_t = self.adaptive_lr_projection(x_t)
+        forget_t = self.adaptive_forget_projection(x_t)
+        momentum_t = self.adaptive_momentum_projection(x_t)
+
+        grads = torch.func.grad(self._associative_memory_loss)(params_t, k_t, v_t)
+
+        new_params = {}
+        new_momentum = {}
+
+        for name, param in params_t.items():
+            grad = grads[name]
+            updated_momentum = momentum_t[name].mul(momentum_t).sub(lr_t * grad)
+            updated_param = param * (1.0 - forget_t) + updated_momentum
+
+            new_params[name] = updated_param
+            new_momentum[name] = updated_momentum
+
+        return new_params, new_momentum
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._add_batch_dim(x)
+        is_generating = x.size(1) == 1
+        batch_size = x.size(0)
 
-        is_generating = x.shape[1] == 1
-
-        params_dict = dict(self.memory_module.named_parameters())
         q = self.query_projection(x, is_generating)
         q = l2_norm(q)
 
-        # when the model is generating, avoid the k,v computation and the update
+        initial_params = {
+            name: p.detach() for name, p in self.memory_module.named_parameters()
+        }
+
         if not is_generating:
-            x = self._pad_to_chunk_size(x)
-            q = q.squeeze(1)
-            v = self.value_projection(x)
-            k = self.key_projection(x)
-            k = l2_norm(k)
+            batched_params = {
+                name: p.detach().expand(batch_size, *p.shape)
+                for name, p in initial_params.items()
+            }
+            batched_momentum = self._get_momentum_dict(batch_size)
+            batch_update_fn = vmap(self._update_step, in_dims=(0, 0, 0))
 
-            momentum_dict = self._get_momentum_dict(x.size(0))
+            print(x.shape)
 
-            adaptive_lr = self.adaptive_lr_projection(x)
-            adaptive_forget = self.adaptive_forget_projection(x)
-            adaptive_momentum = self.adaptive_momentum_projection(x)
+            for t in range(x.size(1)):
+                batched_params, batched_momentum = batch_update_fn(
+                    x[:, t, :, :], batched_params, batched_momentum
+                )
 
-            grad_fn = torch.func.grad(self._associative_memory_loss, has_aux=True)
-            per_chunk_grad_fn = vmap(grad_fn, in_dims=(None, 1, 1, 1))
-            per_chunk_grads, per_chunk_loss = per_chunk_grad_fn(
-                params_dict, k, v, adaptive_lr
-            )
-            per_chunk_grads = TensorDict(per_chunk_grads)
+            updated_params_dict = {
+                name: p.mean(dim=0) for name, p in batched_params.items()
+            }
 
-            temp_updated_params = {}
-            for name, param in self.memory_module.named_parameters():
-                grad = per_chunk_grads[name].mean(dim=0)
-                momentum = momentum_dict[name]
-
-                # TODO: should this remain chunk dependent?
-                alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
-                theta_t = adaptive_lr.mean(dim=[1, 2, 3])
-                eta_t = adaptive_momentum.mean(dim=[1, 2, 3])
-
-                alpha_t = flatten_and_expand(alpha_t, grad.dim())
-                eta_t = flatten_and_expand(eta_t, grad.dim())
-                theta_t = flatten_and_expand(theta_t, grad.dim())
-
-                momentum = momentum.mul(eta_t).sub(theta_t * grad)
-                new_param = param * (1.0 - alpha_t) + momentum
-                temp_updated_params[name] = new_param.mean(0)
-
-                with torch.no_grad():
+            with torch.no_grad():
+                final_momentum = {
+                    name: m.mean(dim=0) for name, m in batched_momentum.items()
+                }
+                for name, _ in self.memory_module.named_parameters():
                     buffer_name = f"momentum_{name.replace('.', '_')}"
-                    getattr(self, buffer_name).copy_(momentum.mean(dim=0))
-
-            updated_params_dict = temp_updated_params
+                    getattr(self, buffer_name).copy_(final_momentum[name])
 
         else:
-            updated_params_dict = dict(self.memory_module.named_parameters())
+            updated_params_dict = initial_params
 
         retrieved = functional_call(self.memory_module, updated_params_dict, q)
 

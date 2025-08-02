@@ -2,13 +2,13 @@ experiment:
   name: "eduweb_pt"
   seed: 0
   epochs: 1
-  eduweb_batch_size: 8
-  batch_size: 4 # used for Babilong
-  learning_rate: 4e-4
+  eduweb_batch_size: 2
+  batch_size: 2 # used for Babilong
+  learning_rate: 4e-5
   weight_decay: 0.1 
 
   num_train_samples: 1e4 # number of eduweb samples used for training
-  num_test_it: 200
+  num_test_it: 200 # number of test samples per split
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"
@@ -24,10 +24,10 @@ neural_memory:
   mlp_depth: 3
   mlp_expansion_factor: 2
   max_adaptive_lr: 1e-2
-  n_chunks: 512
+  # n_chunks: 512
 
 memory_llama:
   llama_hf_path: "meta-llama/Llama-3.2-1B"
-  trainable_blocks: [-1, -2]
+  trainable_blocks: ~ # -1 # indices of the trainable llama blocks
   memory_layer_id: -2 # the index of the layer to augment with a memory module
 
