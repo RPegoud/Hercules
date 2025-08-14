@@ -3,7 +3,7 @@ From: drikster80/vllm-aarch64-openai:v0.6.1
 
 %files
     # Using a requirements.txt file for this example
-    container_reqs.txt /opt/project/container_reqs.txt
+    requirements.txt /opt/project/requirements.txt
 
 %environment
     # This section correctly sets the environment for when the container is RUN.
@@ -37,17 +37,15 @@ EOF
     # --- Create Virtual Environment ---
     echo "--> Creating virtual environment..."
     # Now we can just use `uv` directly as it's in the system PATH
+    # Create venv in the same location runtime will use
     uv venv /opt/project/.venv --system-site-packages
-
-    # --- Install Dependencies Safely ---
     VENV_PYTHON="/opt/project/.venv/bin/python"
 
-    echo "--> Installing torch stub into venv..."
-    # We can also just use `uv` here now
-    TMPDIR=/data/ucabpag/tmp uv pip install --python $VENV_PYTHON -e /opt/project/fake_torch_package
+    # Install fake torch in non-editable mode
+    TMPDIR=/tmp uv pip install --python $VENV_PYTHON /opt/project/fake_torch_package
 
-    echo "--> Installing dependencies from container_reqs.txt..."
-    TMPDIR=/data/ucabpag/tmp uv pip install --python $VENV_PYTHON -r /opt/project/container_reqs.txt
+    # Install all other dependencies into the same env
+    TMPDIR=/tmp uv pip install --python $VENV_PYTHON -r /opt/project/requirements.txt
 
     # --- Clean Up ---
     echo "--> Cleaning up build files..."

@@ -11,6 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from torchviz import make_dot
 
 from hercules import (
     Logger,
@@ -53,10 +54,12 @@ def _setup(
     logger.set_experiment_name(cfg, cfg_dict)
 
     # --- model and tokenizer setup ---
-    model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
+    model = MemoryLlama(
+        neural_memory_config=cfg.neural_memory, **cfg.memory_llama, **cfg.lora
+    )
 
     optimizer = bnb.optim.Adam8bit(
-        model.neural_memory.gate_parameters,
+        model.trainable_parameters,
         lr=cfg.experiment.learning_rate,
         weight_decay=cfg.experiment.weight_decay,
     )
@@ -111,7 +114,12 @@ def _train_one_epoch(
         batch = {k: v for k, v in batch.items()}
         outputs = model(**batch)
         loss = outputs.loss
+        make_dot(loss, params=dict(model.named_parameters())).render(
+            "graph", format="png"
+        )
         accelerator.backward(loss)
+
+        exit()
 
         optimizer.step()
         optimizer.zero_grad()
@@ -201,9 +209,12 @@ def _evaluate(
                 metrics_to_log = {
                     f"accuracy_{test_split}": accuracy,
                     f"test_causal_loss_{test_split}": test_causal_loss,
-                    "step": it,
+                    "iteration": it,
                 }
                 accelerator.log(metrics_to_log)
+
+                if it >= cfg.experiment.num_test_it:
+                    break
 
 
 @hydra.main(

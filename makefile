@@ -13,28 +13,33 @@ build:
 	singularity build --sandbox --fakeroot $(SIF_NAME) $(DEF_FILE)
 
 shell:
-	singularity exec --fakeroot --nv --cleanenv --writable-tmpfs \
+	singularity exec --fakeroot --nv --cleanenv \
 	--bind /etc/pki/ca-trust/extracted/pem:/etc/pki/ca-trust/extracted/pem \
 	$(SIF_NAME) bash -c "cd Hercules && exec bash"
 
-pt_bl: # pre-training on Babilong
-	uv run accelerate launch -m hercules.scripts.bl_memory_pretraining 
-
-pt_bl_ls: # pre-training on babilong with wandb loging and model saving
-	uv run accelerate launch  -m hercules.scripts.bl_memory_pretraining \
-	experiment.save_model=True \
-	experiment.log_experiment=True
-
 pt_ew: # pre-training on Eduweb
-	uv run accelerate launch -m hercules.scripts.eduweb_memory_pretraining 
+	accelerate launch -m hercules.scripts.eduweb_memory_pretraining 
 
 pt_ew_ls: # pre-training on babilong with wandb loging and model saving
-	uv run accelerate launch -m hercules.scripts.eduweb_memory_pretraining \
+	accelerate launch -m hercules.scripts.eduweb_memory_pretraining \
 	experiment.save_model=True \
 	experiment.log_experiment=True
-
-
+	
 baseline:
-	uv run accelerate launch -m hercules.scripts.llama_baseline \
+	accelerate launch -m hercules.scripts.llama_baseline \
 	experiment.save_model=True \
 	experiment.log_experiment=True
+
+
+# pt_ew: # pre-training on Eduweb
+# 	uv run --active accelerate launch -m hercules.scripts.eduweb_memory_pretraining 
+
+# pt_ew_ls: # pre-training on babilong with wandb loging and model saving
+# 	uv run --active accelerate launch -m hercules.scripts.eduweb_memory_pretraining \
+# 	experiment.save_model=True \
+# 	experiment.log_experiment=True
+
+# baseline:
+# 	uv run accelerate launch -m hercules.scripts.llama_baseline \
+# 	experiment.save_model=True \
+# 	experiment.log_experiment=True
