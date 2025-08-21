@@ -10,6 +10,8 @@ data
 wandb
 docs 
 models
+checkpoints
+fake_torch_package/
 
 # nethack wiki
 dumps
