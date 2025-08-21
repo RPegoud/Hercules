@@ -6,6 +6,7 @@ from colorama import Fore, Style, init
 from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM
 
+
 COLORS_TO_FORE = {
     "GREEN": Fore.GREEN,
     "BLUE": Fore.BLUE,
@@ -13,6 +14,7 @@ COLORS_TO_FORE = {
     "CYAN": Fore.CYAN,
     "YELLOW": Fore.YELLOW,
     "WHITE": Fore.WHITE,
+    "MAGENTA": Fore.MAGENTA,
 }
 
 STR_TO_STYLE = {
@@ -54,52 +56,47 @@ class Logger:
         )
 
     def log_memory_model(self, model: AutoModelForCausalLM, **kwargs):
-        trainable_memory = sum(
-            p.numel() for p in model.neural_memory.parameters() if p.requires_grad
-        )
-        trainable_llama = sum(
-            p.numel() for p in model.llama.parameters() if p.requires_grad
-        )
-        frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
         self.log("Memory Llama", "blue", **kwargs)
+        model.model.print_trainable_parameters()
         self.log(
-            f"Trainable parameters:\nMemory module: {trainable_memory:.3e}\nLlama: {trainable_llama:.3e}",
+            f"Memory Module size: {model.n_memory_params:.3e}",
             "blue",
             "normal",
             **kwargs,
         )
-        self.log(
-            f"Total trainable parameters: {trainable_llama+trainable_memory:.3e}",
-            "blue",
-            "normal",
-            **kwargs,
-        )
-        self.log(f"Frozen parameters: {frozen:.3e}", "blue", "normal", **kwargs)
 
     def set_experiment_name(self, cfg, cfg_dict: DictConfig) -> None:
         if cfg.experiment.log_experiment:
             self.ts = datetime.now().strftime("%m-%d_%H-%M")
-            if cfg.experiment.name == "babilong_pt":
-                if cfg.experiment.use_global_split:
-                    run_name = f"global_split_{cfg.experiment.global_split_test_size}__{self.ts}"
+
+            if cfg.experiment.run_name is None:
+                if cfg.experiment.name == "babilong_pt":
+                    if cfg.experiment.use_global_split:
+                        run_name = f"global_split_{cfg.experiment.global_split_test_size}__{self.ts}"
+                        self.log(
+                            f"Using global train/test split with test size: {cfg.experiment.global_split_test_size}",
+                            "yellow",
+                        )
+                    else:
+                        run_name = f"train_{cfg.experiment.train_splits}__test_{cfg.experiment.test_splits}__{self.ts}"
+                        self.log(
+                            f"""Using specific train/test splits:
+                    Train: {cfg.experiment.train_splits}
+                    Test: {cfg.experiment.test_splits}""",
+                            "yellow",
+                        )
+                elif cfg.experiment.name == "eduweb_pt":
+                    run_name = f"{cfg.experiment.name}_{cfg.experiment.num_train_samples}__{cfg.experiment.test_splits}__{self.ts}"
                     self.log(
-                        f"Using global train/test split with test size: {cfg.experiment.global_split_test_size}",
+                        f"Eduweb pre-training: {cfg.experiment.num_train_samples} samples, Babilong test splits: {cfg.experiment.test_splits}",
                         "yellow",
                     )
-                else:
-                    run_name = f"train_{cfg.experiment.train_splits}__test_{cfg.experiment.test_splits}__{self.ts}"
-                    self.log(
-                        f"""Using specific train/test splits:
-                Train: {cfg.experiment.train_splits}
-                Test: {cfg.experiment.test_splits}""",
-                        "yellow",
-                    )
-            elif cfg.experiment.name == "eduweb_pt":
-                run_name = f"{cfg.experiment.name}_{cfg.experiment.num_train_samples}__{cfg.experiment.test_splits}__{self.ts}"
-                self.log(
-                    f"Eduweb pre-training: {cfg.experiment.num_train_samples} samples, Babilong test splits: {cfg.experiment.test_splits}",
-                    "yellow",
-                )
+
+            else:
+                run_name = f"{cfg.experiment.run_name}__{self.ts}"
+
+            self.log(f"Run name: {run_name}", "magenta")
+
             self.accelerator.init_trackers(
                 project_name="Hercules",
                 config=cfg_dict,

@@ -80,7 +80,7 @@ class NeuralMemory(nn.Module):
             buffer_name = f"momentum_{name.replace('.', '_')}"
             momentum = getattr(self, buffer_name)
             # Expand to match batch size
-            momentum = momentum.expand(batch_size, *momentum.shape)  # .to(device)
+            momentum = momentum.expand(batch_size, *momentum.shape)
             momentum_dict[name] = momentum
         return TensorDict(momentum_dict)
 
@@ -119,6 +119,7 @@ class NeuralMemory(nn.Module):
         is_generating = x.shape[1] == 1
 
         params_dict = dict(self.memory_module.named_parameters())
+
         q = self.query_projection(x, is_generating)
         q = l2_norm(q)
 

@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import time
 from typing import Dict, Tuple
@@ -6,11 +7,13 @@ import bitsandbytes as bnb
 import hydra
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.utils import ProjectConfiguration
 from dotenv import dotenv_values
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+import shutil
 
 from hercules import (
     Logger,
@@ -39,7 +42,15 @@ def _setup(
 
     # --- accelerator setup ---
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
-    accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs], log_with="wandb")
+    accelerator = Accelerator(
+        kwargs_handlers=[accelerator_kwargs],
+        log_with="wandb",
+        gradient_accumulation_steps=cfg.experiment.gradient_accumulation_steps,
+        project_config=ProjectConfiguration(
+            project_dir=f"checkpoints/{cfg.experiment.name}",
+            automatic_checkpoint_naming=True,
+        ),
+    )
     logger = Logger(accelerator=accelerator)
 
     # --- config setup ---
@@ -53,10 +64,12 @@ def _setup(
     logger.set_experiment_name(cfg, cfg_dict)
 
     # --- model and tokenizer setup ---
-    model = MemoryLlama(neural_memory_config=cfg.neural_memory, **cfg.memory_llama)
+    model = MemoryLlama(
+        neural_memory_config=cfg.neural_memory, **cfg.memory_llama, **cfg.lora
+    )
 
     optimizer = bnb.optim.Adam8bit(
-        model.trainable_parameters,
+        filter(lambda p: p.requires_grad, model.parameters()),
         lr=cfg.experiment.learning_rate,
         weight_decay=cfg.experiment.weight_decay,
     )
@@ -98,6 +111,7 @@ def _train_one_epoch(
     train_loader: DataLoader,
     cfg: DictConfig,
     accelerator: Accelerator,
+    logger: Logger,
 ):
     model.train()
 
@@ -109,23 +123,34 @@ def _train_one_epoch(
     )
     for it, batch in enumerate(progress_bar):
         batch = {k: v for k, v in batch.items()}
-        outputs = model(**batch)
-        loss = outputs.loss
-        accelerator.backward(loss)
+        with accelerator.accumulate(model):
+            outputs = model(**batch)
+            loss = outputs.loss
+            accelerator.backward(loss)
 
-        optimizer.step()
-        optimizer.zero_grad()
+            optimizer.step()
+            optimizer.zero_grad()
 
-        train_causal_loss = loss.item()
+            train_causal_loss = loss.item()
 
-        if accelerator.is_main_process and cfg.experiment.log_experiment:
-            accelerator.log(
-                {
-                    "eduweb_causal_loss": train_causal_loss,
-                    "epoch": epoch,
-                    "step": it,
-                }
-            )
+            if accelerator.is_main_process and cfg.experiment.log_experiment:
+                accelerator.log(
+                    {
+                        "eduweb_causal_loss": train_causal_loss,
+                        "epoch": epoch,
+                        "step": it,
+                    }
+                )
+
+        if (
+            accelerator.is_main_process
+            and (it + 1) % cfg.experiment.save_checkpoints_every == 0
+        ):
+            ckpt_dir = os.path.join(accelerator.project_dir, "latest")
+            if os.path.exists(ckpt_dir):
+                shutil.rmtree(ckpt_dir)
+            accelerator.save_state(ckpt_dir)
+            logger.log(f"Saved Checkpoint {it+1} under {ckpt_dir}", main_process=True)
 
 
 def _evaluate(
@@ -185,13 +210,17 @@ def _evaluate(
                     ]
 
                     generated_texts = tokenizer.batch_decode(
-                        newly_generated_ids, skip_special_tokens=True
+                        newly_generated_ids, skip_special_tokens=False
                     )
 
                     target_texts = batch["target_text"]
 
                     for gen_text, target_text in zip(generated_texts, target_texts):
                         if target_text in gen_text:
+                            logger.log(
+                                f"Target: {target_text}\nGenerated:{gen_text}\n",
+                                "green", style="normal"
+                            )
                             num_correct += 1
                     accuracy = num_correct / ((it + 1) * cfg.experiment.batch_size)
 
@@ -225,6 +254,11 @@ def main(cfg: DictConfig):
         logger,
     ) = _setup(cfg)
 
+    if cfg.experiment.resume_from_checkpoint:
+        resume_dir = os.path.join(f"checkpoints/{cfg.experiment.resume_path}", "latest")
+        logger.log(f"Loading checkpoint state from {resume_dir}", "blue")
+        accelerator.load_state(resume_dir)
+
     # --- Training ---
     logger.log("--- Starting training phase ---", "cyan")
     logger.log(
@@ -234,7 +268,9 @@ def main(cfg: DictConfig):
     )
 
     for epoch in tqdm(range(cfg.experiment.epochs)):
-        _train_one_epoch(model, optimizer, epoch, train_loader, cfg, accelerator)
+        _train_one_epoch(
+            model, optimizer, epoch, train_loader, cfg, accelerator, logger
+        )
 
     # --- Test ---
     logger.log("--- Starting test phase ---", "cyan")
@@ -248,7 +284,7 @@ def main(cfg: DictConfig):
     if cfg.experiment.log_experiment:
         accelerator.end_training()
 
-    if cfg.experiment.save_model:
+    if cfg.experiment.save_final_model:
         m = accelerator.unwrap_model(model)
         save_dir = os.path.join(f"models/{cfg.experiment.name}/", logger.ts)
         os.makedirs(save_dir, exist_ok=True)
