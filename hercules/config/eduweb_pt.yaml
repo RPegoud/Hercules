@@ -12,6 +12,7 @@ experiment:
   num_test_it: 200
   max_seq_len: 2048 # maximum sequence length of training samples
 
+
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"
   train_splits: ~ # Babilong splits used in training
@@ -37,7 +38,7 @@ memory_llama:
   llama_hf_path: "meta-llama/Llama-3.2-1B"
   memory_layer_id: [1, 3, 5, 7, 9, 11, 13, 15] # the index of the layer to augment with a memory module
   use_lora: true
-
+  
 lora:
   lora_rank: 16        # The rank of the LoRA matrices.
   lora_alpha: 32       # The scaling factor for the LoRA weights.

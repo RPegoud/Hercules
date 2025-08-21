@@ -149,7 +149,7 @@ class NeuralMemory(nn.Module):
                 grad = per_chunk_grads[name].mean(dim=0)
                 momentum = momentum_dict[name]
 
-                # TODO: should this remain token dependent?
+                # TODO: should this remain chunk dependent?
                 alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
                 theta_t = adaptive_lr.mean(dim=[1, 2, 3])
                 eta_t = adaptive_momentum.mean(dim=[1, 2, 3])
