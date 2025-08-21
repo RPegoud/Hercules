@@ -5,6 +5,7 @@ from typing import List, Union
 from colorama import Style, Fore
 from peft import LoraConfig, get_peft_model, TaskType
 from hercules import NeuralMemory
+from omegaconf.listconfig import ListConfig
 
 
 class MemoryLlama(nn.Module):
@@ -13,7 +14,6 @@ class MemoryLlama(nn.Module):
         llama_hf_path: str,
         neural_memory_config: dict,
         memory_layer_id: int,
-        mode: str,
         hf_token: str,
         use_lora: bool,
         lora_rank: int,
@@ -31,20 +31,26 @@ class MemoryLlama(nn.Module):
             for p in llama.parameters():
                 p.requires_grad = False
 
-        self.llama = llama
         self.config = llama.config
 
         neural_memory_config["hidden_size"] = llama.config.hidden_size
         self.neural_memory_config = neural_memory_config
 
-        self.neural_memory = NeuralMemory(**neural_memory_config)
-        self.memory_layer_id = memory_layer_id
+        if not isinstance(memory_layer_id, ListConfig):
+            memory_layer_id = [memory_layer_id]
+        self.memory_layer_ids = memory_layer_id
 
-        memory_llama = inject_memory_module(  # memory-augmented llama
-            self.llama,
-            self.neural_memory,
-            layer_id=memory_layer_id,
-            mode=mode,
+        self.neural_memory = nn.ModuleList(
+            [NeuralMemory(**neural_memory_config) for _ in self.memory_layer_ids]
+        )
+
+        n_memory_params = 0
+        for memory_module in self.neural_memory:
+            n_memory_params += sum(p.numel() for p in memory_module.parameters())
+        self.n_memory_params = n_memory_params
+
+        memory_llama = inject_memory_modules(
+            llama, self.neural_memory, self.memory_layer_ids
         )
 
         if use_lora:
@@ -59,21 +65,22 @@ class MemoryLlama(nn.Module):
             )
             print(f"{Fore.BLUE}Applying LoRA config ...")
             memory_llama = get_peft_model(memory_llama, lora_config)
-            memory_llama.print_trainable_parameters()
+
+            # enable gradients for gate parameters
+            for n, p in memory_llama.named_parameters():
+                if "neural_memory" in n:
+                    p.requires_grad = True
+                    if "memory_module" in n:
+                        p.requires_grad = False
 
         self.model = memory_llama
 
-    @property
-    def trainable_parameters(self) -> List[nn.Parameter]:
-        """
-        Returns a list of all parameters that should be trained.
-        This includes all parameters of the NeuralMemory module and,
-        if LoRA is used, the trainable LoRA parameters from the base model.
-        """
-        gate_params = list(self.neural_memory.gate_parameters)
-        llm_params = [p for p in self.model.parameters() if p.requires_grad]
-        all_params = list({id(p): p for p in gate_params + llm_params}.values())
-        return all_params
+    def __getattribute__(self, attr):
+        try:
+            return super().__getattribute__(attr)
+        except AttributeError:
+            model = super().__getattribute__("model")
+            return getattr(model, attr)
 
     def forward(self, input_ids, attention_mask, labels, **kwargs):
         return self.model(
@@ -96,19 +103,10 @@ class LlamaMemoryAsLayer(nn.Module):
         self,
         original_layer: nn.Module,
         neural_memory: NeuralMemory,
-        mode: str,
     ):
         super().__init__()
         self.original_layer = original_layer
         self.neural_memory = neural_memory
-        self.mode = mode
-
-        print(f"{Fore.BLUE}Memory Llama mode: {mode}")
-
-        assert mode in [
-            "embedding",
-            "attention",
-        ], f"Expected mode to be either 'embedding' or 'attention', got {mode}"
 
     @staticmethod
     def _assert_equal_dim(x: torch.Tensor, y: torch.Tensor) -> None:
@@ -117,40 +115,24 @@ class LlamaMemoryAsLayer(nn.Module):
         ), f"Memory module output shape: {x.shape}, expected {y.shape}"
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
-        if self.mode == "embedding":
-            mal_output = self.neural_memory(hidden_states)
-            with torch.set_grad_enabled(self.training):
-                llama_output = self.original_layer(
-                    mal_output, attention_mask=attention_mask, **kwargs
-                )
-                attn_output = llama_output[0]
-            self._assert_equal_dim(mal_output, attn_output)
-            return llama_output
-
-        if self.mode == "attention":
-            with torch.set_grad_enabled(self.training):
-                llama_output = self.original_layer(
-                    hidden_states, attention_mask=attention_mask, **kwargs
-                )
+        mal_output = self.neural_memory(hidden_states)
+        with torch.set_grad_enabled(self.training):
+            llama_output = self.original_layer(
+                mal_output, attention_mask=attention_mask, **kwargs
+            )
             attn_output = llama_output[0]
-            mal_output = self.neural_memory(attn_output)
-            self._assert_equal_dim(mal_output, attn_output)
-
-            # replace the attention output with the memory augmented attention
-            return (mal_output,) + llama_output[1:]
+        self._assert_equal_dim(mal_output, attn_output)
+        return llama_output
 
 
-def inject_memory_module(
+def inject_memory_modules(
     llama: LlamaForCausalLM,
-    memory_module: NeuralMemory,
-    layer_id: Union[int, list],
-    mode: str,
+    memory_modules: nn.ModuleList,
+    layer_ids: List[int],
 ) -> LlamaForCausalLM:
-    if not isinstance(layer_id, list):
-        layer_id = [layer_id]
 
-    for id in layer_id:
-        original_layer = llama.model.layers[id]
-        llama.model.layers[id] = LlamaMemoryAsLayer(original_layer, memory_module, mode)
+    for layer_id, memory_module in zip(layer_ids, memory_modules):
+        original_layer = llama.model.layers[layer_id]
+        llama.model.layers[layer_id] = LlamaMemoryAsLayer(original_layer, memory_module)
 
     return llama

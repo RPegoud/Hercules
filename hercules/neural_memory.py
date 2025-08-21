@@ -118,10 +118,7 @@ class NeuralMemory(nn.Module):
 
         is_generating = x.shape[1] == 1
 
-        # params_dict = dict(self.memory_module.named_parameters())
-        params_dict = {
-            name: p.detach() for name, p in self.memory_module.named_parameters()
-        }
+        params_dict = dict(self.memory_module.named_parameters())
 
         q = self.query_projection(x, is_generating)
         q = l2_norm(q)

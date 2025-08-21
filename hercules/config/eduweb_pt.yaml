@@ -2,34 +2,40 @@ experiment:
   name: "eduweb_pt"
   seed: 0
   epochs: 1
-  eduweb_batch_size: 8
+  gradient_accumulation_steps: 16
+  eduweb_batch_size: 4
   batch_size: 4 # used for Babilong
   learning_rate: 4e-4
   weight_decay: 0.1 
 
-  num_train_samples: 1e4 # number of eduweb samples used for training
+  num_train_samples: 1e5 # number of eduweb samples used for training
   num_test_it: 200
+  max_seq_len: 2048 # maximum sequence length of training samples
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"
   train_splits: ~ # Babilong splits used in training
   test_splits: "all" # Babilong splits used in testing
   eval_with_generate: true # whether to evaluate the model performance with `.generate()`
-  max_gen_tokens: 50 # maximum number of tokens generated for evaluation
+  max_gen_tokens: 25 # maximum number of tokens generated for evaluation
 
-  save_model: false
-  log_experiment: false
+  save_final_model: false
+  save_checkpoints_every: 1000 # frequency of model checkpoints
+  log_experiment: false # whether to log the experiment with wandb
+  resume_from_checkpoint: false # whether to load an existing model checkpoint
+  resume_name: ~ # name of the experiment to load the state from
+
+  run_name: "training=5e5|lora|chunks=512|memory every two layer"
 
 neural_memory:
-  mlp_depth: 5
-  mlp_expansion_factor: 6
+  mlp_depth: 3
+  mlp_expansion_factor: 2
   max_adaptive_lr: 1e-2
   n_chunks: 512
 
 memory_llama:
   llama_hf_path: "meta-llama/Llama-3.2-1B"
-  memory_layer_id: 0 # the index of the layer to augment with a memory module
-  mode: "embedding"
+  memory_layer_id: [1, 3, 5, 7, 9, 11, 13, 15] # the index of the layer to augment with a memory module
   use_lora: true
 
 lora:
@@ -41,6 +47,6 @@ lora:
     - "v_proj"
     - "k_proj"
     - "o_proj"
-    - "gate_proj"  
-    - "down_proj"  
-    - "up_proj" 
+    - "gate_proj"
+    - "down_proj"
+    - "up_proj"

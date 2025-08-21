@@ -22,12 +22,12 @@ pt_ew: # pre-training on Eduweb
 
 pt_ew_ls: # pre-training on babilong with wandb loging and model saving
 	accelerate launch -m hercules.scripts.eduweb_memory_pretraining \
-	experiment.save_model=True \
+	experiment.save_final_model=True \
 	experiment.log_experiment=True
 	
 baseline:
 	accelerate launch -m hercules.scripts.llama_baseline \
-	experiment.save_model=True \
+	experiment.save_final_model=True \
 	experiment.log_experiment=True
 
 
@@ -36,10 +36,10 @@ baseline:
 
 # pt_ew_ls: # pre-training on babilong with wandb loging and model saving
 # 	uv run --active accelerate launch -m hercules.scripts.eduweb_memory_pretraining \
-# 	experiment.save_model=True \
+# 	experiment.save_final_model=True \
 # 	experiment.log_experiment=True
 
 # baseline:
 # 	uv run accelerate launch -m hercules.scripts.llama_baseline \
-# 	experiment.save_model=True \
+# 	experiment.save_final_model=True \
 # 	experiment.log_experiment=True
