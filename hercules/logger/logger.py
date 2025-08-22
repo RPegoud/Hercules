@@ -26,6 +26,7 @@ STR_TO_STYLE = {
 class Logger:
     def __init__(self, accelerator: Accelerator = None):
         self.accelerator = accelerator
+        self.ts = datetime.now().strftime("%m-%d_%H-%M")
         init(autoreset=True)
 
     def log(
@@ -67,8 +68,6 @@ class Logger:
 
     def set_experiment_name(self, cfg, cfg_dict: DictConfig) -> None:
         if cfg.experiment.log_experiment:
-            self.ts = datetime.now().strftime("%m-%d_%H-%M")
-
             if cfg.experiment.run_name is None:
                 if cfg.experiment.name == "babilong_pt":
                     if cfg.experiment.use_global_split:

@@ -158,7 +158,7 @@ def get_specific_split_bl_dataloaders(
                 if split in full_test_ds_dict:
                     test_loaders[split] = DataLoader(
                         full_test_ds_dict[split],
-                        batch_size=cfg.experiment.batch_size,
+                        batch_size=cfg.experiment.babilong_test_batch_size,
                         collate_fn=test_collate_fn,
                         num_workers=8,
                     )
@@ -181,7 +181,7 @@ def get_specific_split_bl_dataloaders(
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=cfg.experiment.batch_size,
+        batch_size=cfg.experiment.babilong_test_batch_size,
         collate_fn=train_collate_fn,
         num_workers=8,
         shuffle=True,
@@ -230,7 +230,7 @@ def get_global_split_bl_dataloaders(
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=cfg.experiment.batch_size,
+        batch_size=cfg.experiment.babilong_test_batch_size,
         collate_fn=train_collate_fn,
         num_workers=8,
         shuffle=True,
@@ -238,7 +238,7 @@ def get_global_split_bl_dataloaders(
 
     test_loader = DataLoader(
         test_ds,
-        batch_size=cfg.experiment.batch_size,
+        batch_size=cfg.experiment.babilong_test_batch_size,
         collate_fn=test_collate_fn,
         num_workers=8,
     )

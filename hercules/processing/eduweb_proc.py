@@ -15,6 +15,7 @@ def tokenize_fn(
         examples["text"],
         padding="max_length",
         truncation=True,
+        max_length=cfg.experiment.max_seq_len,
     )
 
     input_ids = tokens["input_ids"]
@@ -33,7 +34,7 @@ def tokenize_fn(
 
 def get_eduweb_dataloader(
     cfg: DictConfig, tokenizer: PreTrainedTokenizerBase, accelerator: Accelerator
-) -> DataLoader:
+) -> tuple[DataLoader, DataLoader]:
     with accelerator.main_process_first():
         raw_dataset = load_dataset(
             "HuggingFaceFW/fineweb-edu",
@@ -57,10 +58,23 @@ def get_eduweb_dataloader(
         )
         processed_dataset = processed_dataset.with_format("torch")
 
-    return DataLoader(
-        processed_dataset,
-        batch_size=cfg.experiment.eduweb_batch_size,
-        collate_fn=default_data_collator,
-        num_workers=4,
-        drop_last=True,
-    )
+        val_ds = processed_dataset.take(int(cfg.experiment.num_val_samples))
+        train_ds = processed_dataset.skip(int(cfg.experiment.num_val_samples))
+
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg.experiment.eduweb_train_batch_size,
+            collate_fn=default_data_collator,
+            num_workers=4,
+            drop_last=True,
+        )
+
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg.experiment.eduweb_val_batch_size,
+            collate_fn=default_data_collator,
+            num_workers=4,
+            drop_last=False,
+        )
+
+    return train_loader, val_loader

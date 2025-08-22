@@ -3,13 +3,16 @@ experiment:
   seed: 0
   epochs: 1
   gradient_accumulation_steps: 16
-  eduweb_batch_size: 4
-  batch_size: 4 # used for Babilong
-  learning_rate: 4e-4
-  weight_decay: 0.1 
+  eduweb_train_batch_size: 4
+  eduweb_val_batch_size: 8
+  babilong_test_batch_size: 4
+  learning_rate: 1e-3
+  weight_decay: 0.1
 
   num_train_samples: 1e5 # number of eduweb samples used for training
-  num_test_it: 200
+  num_val_samples: 400 # number of samples used to compute the average validation loss
+  num_eval: 1000 # number of evaluations during training
+  num_test_it: 100
   max_seq_len: 2048 # maximum sequence length of training samples
 
 
@@ -26,7 +29,7 @@ experiment:
   resume_from_checkpoint: false # whether to load an existing model checkpoint
   resume_name: ~ # name of the experiment to load the state from
 
-  run_name: "training=5e5|lora|chunks=512|memory every two layer"
+  run_name: "training=5e5|lora|chunks=512|cosine_schedule|memory every two layer"
 
 neural_memory:
   mlp_depth: 3
