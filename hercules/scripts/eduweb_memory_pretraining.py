@@ -16,6 +16,8 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 import shutil
 from dataclasses import dataclass
+from safetensors.torch import load_file
+
 
 from hercules import (
     Logger,
@@ -46,6 +48,8 @@ def setup(
     Accelerator,
     Logger,
 ]:
+    torch.manual_seed(cfg.experiment.seed)
+
     # --- wandb variables ---
     env_vars = dotenv_values(".env")
     os.environ["WANDB_API_KEY"] = env_vars["WANDB_TOKEN"]
@@ -55,9 +59,9 @@ def setup(
     # --- accelerator setup ---
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
     accelerator = Accelerator(
+        gradient_accumulation_steps=cfg.experiment.gradient_accumulation_steps,
         kwargs_handlers=[accelerator_kwargs],
         log_with="wandb",
-        gradient_accumulation_steps=cfg.experiment.gradient_accumulation_steps,
         project_config=ProjectConfiguration(
             project_dir=f"checkpoints/{cfg.experiment.name}",
             automatic_checkpoint_naming=True,
@@ -72,15 +76,14 @@ def setup(
     steps_per_epoch = int(
         cfg.experiment.num_train_samples // cfg.experiment.eduweb_train_batch_size
     )
+    if isinstance(cfg.experiment.gradient_accumulation_steps, int):
+        steps_per_epoch = steps_per_epoch // cfg.experiment.gradient_accumulation_steps
+
     cfg.experiment["steps_per_epoch"] = steps_per_epoch
     logger.set_experiment_name(cfg, cfg_dict)
-
-    cfg.experiment["ckpt_dir"] = os.path.join(accelerator.project_dir, logger.ts)
-    cfg.experiment["ckpt_dir_best_loss"] = os.path.join(
+    cfg.experiment["ckpt_dir"] = os.path.join(
         accelerator.project_dir, logger.ts, "best_loss"
     )
-    if os.path.exists(cfg.experiment.ckpt_dir):
-        shutil.rmtree(cfg.experiment.ckpt_dir)
 
     # --- model and tokenizer setup ---
     model = MemoryLlama(
@@ -159,10 +162,11 @@ def train_val_one_epoch(
         disable=not accelerator.is_main_process,
     )
     for it, batch in enumerate(progress_bar):
-        state.model.train()
-        state.global_step = it * state.epoch
-        batch = {k: v for k, v in batch.items()}
         with accelerator.accumulate(state.model):
+            state.model.train()
+            state.global_step = it * state.epoch
+            batch = {k: v for k, v in batch.items()}
+
             outputs = state.model(**batch)
             loss = outputs.loss
             accelerator.backward(loss)
@@ -173,24 +177,14 @@ def train_val_one_epoch(
 
             train_causal_loss = loss.item()
 
-            if accelerator.is_main_process and cfg.experiment.log_experiment:
-                accelerator.log(
-                    {
-                        "eduweb_causal_loss": train_causal_loss,
-                        "epoch": state.epoch,
-                        "step": state.global_step,
-                    }
-                )
-
-        # fixed checkpoints
-        if (
-            accelerator.is_main_process
-            and (it + 1) % cfg.experiment.save_checkpoints_every == 0
-        ):
-            accelerator.save_state(cfg.experiment.ckpt_dir)
-            logger.log(
-                f"Saved Checkpoint {it+1} [REGULAR CHECKPOINT, LOSS = {train_causal_loss:.3f}] under {cfg.experiment.ckpt_dir}",
-                main_process=True,
+        if accelerator.is_main_process and cfg.experiment.log_experiment:
+            accelerator.log(
+                {
+                    "eduweb_causal_loss": train_causal_loss,
+                    "learning_rate": state.scheduler.get_lr()[0],
+                    "epoch": state.epoch,
+                    "step": state.global_step,
+                }
             )
 
         # best validation loss checkpoints
@@ -203,9 +197,14 @@ def train_val_one_epoch(
 
             if state.lowest_val_loss is None or avg_val_loss < state.lowest_val_loss:
                 state.lowest_val_loss = avg_val_loss
-                accelerator.save_model(state.model, cfg.experiment.ckpt_dir_best_loss)
+                state.model.save(cfg.experiment.ckpt_dir)
+                with open(
+                    os.path.join(cfg.experiment.ckpt_dir, "loss_value.txt"), "w"
+                ) as f:
+                    f.write(f"Best loss: {state.lowest_val_loss}")
+
                 logger.log(
-                    f"Saved Checkpoint {it+1} [BEST LOSS = {state.lowest_val_loss:.3f}] under {cfg.experiment.ckpt_dir_best_loss}",
+                    f"Saved Checkpoint {it+1} [BEST LOSS = {state.lowest_val_loss:.3f}] under {cfg.experiment.ckpt_dir}",
                     "green",
                     main_process=True,
                 )
@@ -224,7 +223,6 @@ def validate(
 
     progress_bar = tqdm(
         val_loader,
-        desc=f"Validation phase",
         total=cfg.experiment.num_val_samples // cfg.experiment.eduweb_val_batch_size,
         disable=not accelerator.is_main_process,
     )
@@ -352,28 +350,40 @@ def main(cfg: DictConfig):
     ) = setup(cfg)
 
     if cfg.experiment.resume_from_checkpoint:
-        resume_dir = os.path.join(f"checkpoints/{cfg.experiment.resume_path}", "latest")
-        logger.log(f"Loading checkpoint state from {resume_dir}", "blue")
-        accelerator.load_state(resume_dir)
-
-    # --- Training ---
-    logger.log("--- Starting training phase ---", "cyan")
-    logger.log(
-        f"Task: {cfg.experiment.train_task_name}, Split: {cfg.experiment.train_splits}",
-        "cyan",
-        style="normal",
-    )
-
-    for epoch in tqdm(range(cfg.experiment.epochs)):
-        state.epoch = epoch
-        state = train_val_one_epoch(
-            state,
-            train_loader,
-            val_loader,
-            cfg,
-            accelerator,
-            logger,
+        logger.log(
+            f"Loading checkpoint state from {cfg.experiment.checkpoint_name}", "blue"
         )
+        _ = cfg.memory_llama.pop("use_lora")
+        state.model.load(
+            adapter_path=cfg.experiment.checkpoint_name,
+            neural_memory_config=cfg.neural_memory,
+            **cfg.memory_llama,
+        )
+        logger.log(f"Validation causal loss: {state.lowest_val_loss}", "blue", "normal")
+
+    else:
+        # --- Training ---
+        logger.log("--- Starting training phase ---", "cyan")
+        logger.log(
+            f"Task: {cfg.experiment.train_task_name}, Split: {cfg.experiment.train_splits}",
+            "cyan",
+            style="normal",
+        )
+
+        for epoch in tqdm(range(cfg.experiment.epochs)):
+            state.epoch = epoch
+            state = train_val_one_epoch(
+                state,
+                train_loader,
+                val_loader,
+                cfg,
+                accelerator,
+                logger,
+            )
+
+    train_loader, val_loader, state.optimizer = accelerator.free_memory(
+        train_loader, val_loader, state.optimizer
+    )
 
     # --- Test ---
     logger.log("--- Starting test phase ---", "cyan")

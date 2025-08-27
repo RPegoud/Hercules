@@ -6,6 +6,7 @@ from colorama import Style, Fore
 from peft import LoraConfig, get_peft_model, TaskType
 from hercules import NeuralMemory
 from omegaconf.listconfig import ListConfig
+from peft import PeftModel
 
 
 class MemoryLlama(nn.Module):
@@ -16,10 +17,10 @@ class MemoryLlama(nn.Module):
         memory_layer_id: int,
         hf_token: str,
         use_lora: bool,
-        lora_rank: int,
-        lora_alpha: int,
-        lora_target_modules: list[str],
-        lora_dropout: float,
+        lora_rank: int | None = None,
+        lora_alpha: int | None = None,
+        lora_target_modules: list[str] | None = None,
+        lora_dropout: float | None = None,
     ):
         super(MemoryLlama, self).__init__()
 
@@ -27,9 +28,6 @@ class MemoryLlama(nn.Module):
             llama_hf_path,
             token=hf_token,
         )
-        if not use_lora:
-            for p in llama.parameters():
-                p.requires_grad = False
 
         self.config = llama.config
 
@@ -96,6 +94,38 @@ class MemoryLlama(nn.Module):
             attention_mask=attention_mask,
             **kwargs,
         )
+
+    def save(self, path: str) -> None:
+        self.model.save_pretrained(path, safe_serialization=True)
+
+    @classmethod
+    def load(
+        cls,
+        adapter_path: str,
+        llama_hf_path: str,
+        neural_memory_config: dict,
+        memory_layer_id: int,
+        hf_token: str,
+        **kwargs,
+    ):
+        base_memory_llama = cls(
+            use_lora=False,
+            llama_hf_path=llama_hf_path,
+            neural_memory_config=neural_memory_config,
+            memory_layer_id=memory_layer_id,
+            hf_token=hf_token,
+            **kwargs,
+        )
+
+        initial_params = base_memory_llama.model.parameters()
+
+        base_memory_llama.model = PeftModel.from_pretrained(
+            base_memory_llama.model, adapter_path
+        )
+
+        assert (
+            initial_params != base_memory_llama.model.parameters()
+        ), "Loaded parameters are the same as random initialisation, something went wrong."
 
 
 class LlamaMemoryAsLayer(nn.Module):

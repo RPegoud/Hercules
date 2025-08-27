@@ -3,18 +3,17 @@ experiment:
   seed: 0
   epochs: 1
   gradient_accumulation_steps: 16
-  eduweb_train_batch_size: 4
+  eduweb_train_batch_size: 2
   eduweb_val_batch_size: 8
   babilong_test_batch_size: 4
-  learning_rate: 1e-3
+  learning_rate: 4e-4
   weight_decay: 0.1
 
   num_train_samples: 1e5 # number of eduweb samples used for training
-  num_val_samples: 400 # number of samples used to compute the average validation loss
-  num_eval: 1000 # number of evaluations during training
+  num_val_samples: 2000 # number of samples used to compute the average validation loss
+  num_eval: 100 # number of evaluations during training
   num_test_it: 100
   max_seq_len: 2048 # maximum sequence length of training samples
-
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"
@@ -24,12 +23,11 @@ experiment:
   max_gen_tokens: 25 # maximum number of tokens generated for evaluation
 
   save_final_model: false
-  save_checkpoints_every: 1000 # frequency of model checkpoints
   log_experiment: false # whether to log the experiment with wandb
   resume_from_checkpoint: false # whether to load an existing model checkpoint
-  resume_name: ~ # name of the experiment to load the state from
+  checkpoint_name: "checkpoints/eduweb_pt/08-26_14-26/best_loss/" # name of the experiment to load the state from
 
-  run_name: "training=5e5|lora|chunks=512|cosine_schedule|memory every two layer"
+  run_name: "TRAIN:Llama8B|training=1e5|lora|chunks=512|cosine_schedule|memory every two layer"
 
 neural_memory:
   mlp_depth: 3
@@ -38,7 +36,8 @@ neural_memory:
   n_chunks: 512
 
 memory_llama:
-  llama_hf_path: "meta-llama/Llama-3.2-1B"
+  # llama_hf_path: "meta-llama/Llama-3.2-1B"
+  llama_hf_path: "meta-llama/Meta-Llama-3-8B"
   memory_layer_id: [1, 3, 5, 7, 9, 11, 13, 15] # the index of the layer to augment with a memory module
   use_lora: true
   
