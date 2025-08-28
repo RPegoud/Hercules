@@ -57,7 +57,7 @@ class NeuralMemory(nn.Module):
     def gate_parameters(self) -> List[nn.Parameter]:
         """
         The forget gate, adaptive learning rate and momentum are trained with ``backward()`` at train time
-        The memory module in itself (residual MLP) is trained at inference time using a custom logic that's
+        The memory network (residual MLP) is trained at inference time using a custom logic that's
         not compatible with ``backward()``
         """
         return [
@@ -113,6 +113,16 @@ class NeuralMemory(nn.Module):
         total_loss = weighted_loss.sum()
         return total_loss, loss
 
+    def retrieve(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            params_dict = dict(self.memory_module.named_parameters())
+            x = self._add_batch_dim(x)
+            q = self.query_projection(x, is_generating=False).squeeze()
+            q = l2_norm(q)
+            retrieved = functional_call(self.memory_module, params_dict, q)
+
+        return retrieved
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._add_batch_dim(x)
 
@@ -123,7 +133,7 @@ class NeuralMemory(nn.Module):
         q = self.query_projection(x, is_generating)
         q = l2_norm(q)
 
-        # when the model is generating, avoid the k,v computation and the update
+        # when the llm is generating, avoid the k,v computation and the update
         if not is_generating:
             x = self._pad_to_chunk_size(x)
             q = q.squeeze(1)
@@ -149,7 +159,6 @@ class NeuralMemory(nn.Module):
                 grad = per_chunk_grads[name].mean(dim=0)
                 momentum = momentum_dict[name]
 
-                # TODO: should this remain chunk dependent?
                 alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
                 theta_t = adaptive_lr.mean(dim=[1, 2, 3])
                 eta_t = adaptive_momentum.mean(dim=[1, 2, 3])

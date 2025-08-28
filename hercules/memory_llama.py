@@ -7,6 +7,19 @@ from peft import LoraConfig, get_peft_model, TaskType
 from hercules import NeuralMemory
 from omegaconf.listconfig import ListConfig
 from peft import PeftModel
+from dataclasses import dataclass
+
+
+@dataclass
+class MemoryStatistics:
+    layer: int
+    gate_norm: float
+    gate_mean: float
+    gate_grad_norm: float
+    mac_norm: float
+    mac_grad_norm: float
+    mac_proj_memory_w_norm: float
+    memory_contrib_ratio: float
 
 
 class MemoryLlama(nn.Module):
@@ -15,7 +28,9 @@ class MemoryLlama(nn.Module):
         llama_hf_path: str,
         neural_memory_config: dict,
         memory_layer_id: int,
+        memory_arch: str,
         hf_token: str,
+        track_memory_statistics: bool,
         use_lora: bool,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
@@ -24,6 +39,7 @@ class MemoryLlama(nn.Module):
     ):
         super(MemoryLlama, self).__init__()
 
+        print(f"{Fore.BLUE}{Style.BRIGHT}MemoryLlama setup:")
         llama = LlamaForCausalLM.from_pretrained(
             llama_hf_path,
             token=hf_token,
@@ -47,8 +63,13 @@ class MemoryLlama(nn.Module):
             n_memory_params += sum(p.numel() for p in memory_module.parameters())
         self.n_memory_params = n_memory_params
 
+        print(f"{Fore.BLUE}Injecting Memory as a {memory_arch.capitalize()} layers ...")
         memory_llama = inject_memory_modules(
-            llama, self.neural_memory, self.memory_layer_ids
+            llama=llama,
+            memory_modules=self.neural_memory,
+            layer_ids=self.memory_layer_ids,
+            track_memory_statistics=track_memory_statistics,
+            arch=memory_arch,
         )
 
         if use_lora:
@@ -129,14 +150,17 @@ class MemoryLlama(nn.Module):
 
 
 class LlamaMemoryAsLayer(nn.Module):
+    # TODO: needs corrections
     def __init__(
         self,
-        original_layer: nn.Module,
-        neural_memory: NeuralMemory,
+        llama_layer: nn.Module,
+        memory_module: NeuralMemory,
+        layer_id: int,
+        track_memory_statistics: bool,
     ):
         super().__init__()
-        self.original_layer = original_layer
-        self.neural_memory = neural_memory
+        self.llama_layer = llama_layer
+        self.memory_module = memory_module
 
     @staticmethod
     def _assert_equal_dim(x: torch.Tensor, y: torch.Tensor) -> None:
@@ -145,9 +169,10 @@ class LlamaMemoryAsLayer(nn.Module):
         ), f"Memory module output shape: {x.shape}, expected {y.shape}"
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
-        mal_output = self.neural_memory(hidden_states)
+        with torch.amp.autocast(enabled=False, device_type="cuda"):
+            mal_output = self.memory_module(hidden_states)
         with torch.set_grad_enabled(self.training):
-            llama_output = self.original_layer(
+            llama_output = self.llama_layer(
                 mal_output, attention_mask=attention_mask, **kwargs
             )
             attn_output = llama_output[0]
@@ -155,14 +180,114 @@ class LlamaMemoryAsLayer(nn.Module):
         return llama_output
 
 
+class LlamaMemoryAsContext(nn.Module):
+    def __init__(
+        self,
+        llama_layer: nn.Module,
+        memory_module: NeuralMemory,
+        layer_id: int,
+        track_memory_statistics: bool,
+    ):
+        super().__init__()
+
+        self.llama_layer = llama_layer
+        self.memory_module = memory_module
+        self.layer_id = layer_id
+        self.track_memory_statistics = track_memory_statistics
+
+        hidden_size = self.llama_layer.self_attn.q_proj.in_features
+        memory_sequence_size = 2 * hidden_size
+        self.hidden_size = hidden_size
+
+        # projection from [attention, memory] to [attention]
+        # initially, the memory components have a weight of 0 so that the behavior
+        # of the llm is unaffected before training
+        self.mac_projection = nn.Linear(memory_sequence_size, hidden_size, bias=False)
+        with torch.no_grad():
+            self.mac_projection.weight[:, :hidden_size] = torch.eye(hidden_size)
+            self.mac_projection.weight[:, hidden_size:] = 0
+
+        # we initialise the gate with zero weights and low bias so that the initial
+        # behavior of the memory-augmented llama model is almost the same as the
+        # original model.
+        self.gate_projection = nn.Linear(hidden_size, hidden_size, bias=True)
+        nn.init.zeros_(self.gate_projection.weight)
+        nn.init.constant_(self.gate_projection.bias, -6)  # sigmoid(-6) = 0.0025
+
+    def forward(self, hidden_states, attention_mask=None, **kwargs):
+        context = self.memory_module.retrieve(hidden_states)
+        norm_hidden_states = self.llama_layer.input_layernorm(hidden_states)
+        memory_sequence = torch.cat([context, norm_hidden_states], dim=-1)
+        mac_sequence = self.mac_projection(memory_sequence)
+
+        attn = self.llama_layer.self_attn(
+            mac_sequence, attention_mask=attention_mask, **kwargs
+        )
+        attn_outputs = attn[0]
+        # TODO: ensure autocast to bf32?
+        memory_outputs = self.memory_module(attn_outputs)
+
+        residual_attn = attn_outputs + hidden_states
+        norm_residual_attn = self.llama_layer.post_attention_layernorm(residual_attn)
+        llama_outputs = self.llama_layer.mlp(norm_residual_attn) + residual_attn
+
+        memory_gate_values = self.gate_projection(llama_outputs)
+        memory_augmented_outputs = llama_outputs + memory_outputs * memory_gate_values
+        block_outputs = (memory_augmented_outputs,) + attn[1:]
+
+        if self.track_memory_statistics:
+            memory_gate_values.retain_grad()
+            mac_sequence.retain_grad()
+
+            self.last_stats = MemoryStatistics(
+                layer=self.layer_id,
+                gate_norm=memory_gate_values.norm().item(),
+                gate_mean=memory_gate_values.mean().item(),
+                gate_grad_norm=(
+                    memory_gate_values.grad.norm().item()
+                    if memory_gate_values.grad is not None
+                    else 0.0
+                ),
+                mac_norm=mac_sequence.norm().item(),
+                mac_grad_norm=(
+                    mac_sequence.grad.norm().item()
+                    if mac_sequence.grad is not None
+                    else 0.0
+                ),
+                mac_proj_memory_w_norm=self.mac_projection.weight[:, self.hidden_size :]
+                .norm()
+                .item(),
+                memory_contrib_ratio=(
+                    (memory_outputs.norm() / (llama_outputs.norm() + 1e-8)).item()
+                ),
+            )
+
+        return block_outputs
+
+
 def inject_memory_modules(
     llama: LlamaForCausalLM,
     memory_modules: nn.ModuleList,
     layer_ids: List[int],
+    track_memory_statistics: bool,
+    arch: str = "context",
 ) -> LlamaForCausalLM:
+    memory_archs = {
+        "layer": LlamaMemoryAsLayer,
+        "context": LlamaMemoryAsContext,
+    }
+    assert (
+        arch in memory_archs.keys()
+    ), f"Excepted `arch` to be one of {memory_archs.keys()} but got {arch}."
+    memory_augmentation_block: nn.Module = memory_archs[arch]
 
     for layer_id, memory_module in zip(layer_ids, memory_modules):
-        original_layer = llama.model.layers[layer_id]
-        llama.model.layers[layer_id] = LlamaMemoryAsLayer(original_layer, memory_module)
+        llama_layer = llama.model.layers[layer_id]
+        llama.model.layers[layer_id] = memory_augmentation_block(
+            llama_layer=llama_layer,
+            memory_module=memory_module,
+            layer_id=layer_id,
+            track_memory_statistics=track_memory_statistics,
+        )
 
     return llama

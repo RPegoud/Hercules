@@ -2,9 +2,8 @@ experiment:
   name: "eduweb_pt"
   seed: 0
   epochs: 1
-  gradient_accumulation_steps: 16
-  eduweb_train_batch_size: 2
-  eduweb_val_batch_size: 8
+  eduweb_train_batch_size: 6
+  eduweb_val_batch_size: 3
   babilong_test_batch_size: 4
   learning_rate: 4e-4
   weight_decay: 0.1
@@ -27,19 +26,21 @@ experiment:
   resume_from_checkpoint: false # whether to load an existing model checkpoint
   checkpoint_name: "checkpoints/eduweb_pt/08-26_14-26/best_loss/" # name of the experiment to load the state from
 
-  run_name: "TRAIN:Llama8B|training=1e5|lora|chunks=512|cosine_schedule|memory every two layer"
+  run_name: "TRAIN:Llama1B|MAC|m2l|t1e5"
 
 neural_memory:
   mlp_depth: 3
   mlp_expansion_factor: 2
-  max_adaptive_lr: 1e-2
-  n_chunks: 512
+  max_adaptive_lr: 1e-2 # maximum adaptive learning rate
+  n_chunks: 512 # the number of chunks created when chunking the input sequence
 
 memory_llama:
-  # llama_hf_path: "meta-llama/Llama-3.2-1B"
-  llama_hf_path: "meta-llama/Meta-Llama-3-8B"
+  memory_arch: "context" # the titans architecture to inject, one of ["layer", "context"]
+  llama_hf_path: "meta-llama/Llama-3.2-1B"
   memory_layer_id: [1, 3, 5, 7, 9, 11, 13, 15] # the index of the layer to augment with a memory module
   use_lora: true
+  track_memory_statistics: true
+
   
 lora:
   lora_rank: 16        # The rank of the LoRA matrices.

@@ -18,7 +18,6 @@ import shutil
 from dataclasses import dataclass
 from safetensors.torch import load_file
 
-
 from hercules import (
     Logger,
     MemoryLlama,
@@ -59,7 +58,6 @@ def setup(
     # --- accelerator setup ---
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
     accelerator = Accelerator(
-        gradient_accumulation_steps=cfg.experiment.gradient_accumulation_steps,
         kwargs_handlers=[accelerator_kwargs],
         log_with="wandb",
         project_config=ProjectConfiguration(
@@ -76,8 +74,6 @@ def setup(
     steps_per_epoch = int(
         cfg.experiment.num_train_samples // cfg.experiment.eduweb_train_batch_size
     )
-    if isinstance(cfg.experiment.gradient_accumulation_steps, int):
-        steps_per_epoch = steps_per_epoch // cfg.experiment.gradient_accumulation_steps
 
     cfg.experiment["steps_per_epoch"] = steps_per_epoch
     logger.set_experiment_name(cfg, cfg_dict)
@@ -161,22 +157,24 @@ def train_val_one_epoch(
         total=cfg.experiment.steps_per_epoch,
         disable=not accelerator.is_main_process,
     )
+
+    memory_stats = []
+
     for it, batch in enumerate(progress_bar):
-        with accelerator.accumulate(state.model):
-            state.model.train()
-            state.global_step = it * state.epoch
-            batch = {k: v for k, v in batch.items()}
+        state.model.train()
+        state.global_step = it * state.epoch
+        batch = {k: v for k, v in batch.items()}
+        outputs = state.model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
 
-            outputs = state.model(**batch)
-            loss = outputs.loss
-            accelerator.backward(loss)
+        state.optimizer.step()
+        state.optimizer.zero_grad()
+        state.scheduler.step()
 
-            state.optimizer.step()
-            state.optimizer.zero_grad()
-            state.scheduler.step()
+        train_causal_loss = loss.item()
 
-            train_causal_loss = loss.item()
-
+        # log training loss and learning rate
         if accelerator.is_main_process and cfg.experiment.log_experiment:
             accelerator.log(
                 {
@@ -186,6 +184,42 @@ def train_val_one_epoch(
                     "step": state.global_step,
                 }
             )
+
+            if cfg.memory_llama.track_memory_statistics:
+                llama_model = state.model.model.get_base_model()
+
+                for layer_id, layer in enumerate(llama_model.model.layers):
+                    layer = state.model.model.layers[layer_id]
+                    if hasattr(layer, "last_stats") and layer.last_stats is not None:
+                        memory_stats.append(layer.last_stats.__dict__)
+
+                if memory_stats:
+                    accelerator.log(
+                        {
+                            "memory/gate_norm": {
+                                s["layer"]: s["gate_norm"] for s in memory_stats
+                            },
+                            "memory/gate_mean": {
+                                s["layer"]: s["gate_mean"] for s in memory_stats
+                            },
+                            "memory/gate_grad_norm": {
+                                s["layer"]: s["gate_grad_norm"] for s in memory_stats
+                            },
+                            "memory/mac_norm": {
+                                s["layer"]: s["mac_norm"] for s in memory_stats
+                            },
+                            "memory/mac_grad_norm": {
+                                s["layer"]: s["mac_grad_norm"] for s in memory_stats
+                            },
+                            "memory/memory_contrib_ratio": {
+                                s["layer"]: s["memory_contrib_ratio"]
+                                for s in memory_stats
+                            },
+                        },
+                        step=state.global_step,
+                    )
+
+                memory_stats.clear()
 
         # best validation loss checkpoints
         if (it + 1) % (

@@ -18,10 +18,10 @@ shell:
 	$(SIF_NAME) bash -c "cd Hercules && exec bash"
 
 pt_ew: # pre-training on Eduweb
-	accelerate launch -m hercules.scripts.eduweb_memory_pretraining 
+	accelerate launch --mixed_precision=bf16 -m hercules.scripts.eduweb_memory_pretraining 
 
 pt_ew_ls: # pre-training on babilong with wandb loging and model saving
-	accelerate launch -m hercules.scripts.eduweb_memory_pretraining \
+	accelerate launch --mixed_precision=bf16 -m hercules.scripts.eduweb_memory_pretraining \
 	experiment.save_final_model=True \
 	experiment.log_experiment=True
 	
