@@ -31,7 +31,7 @@ class NeuralMemory(nn.Module):
         self.n_chunks = n_chunks
         self.added_padding = None
 
-        self.memory_module = ResLinear(hidden_size, mlp_depth, mlp_expansion_factor)
+        self.memory_network = ResLinear(hidden_size, mlp_depth, mlp_expansion_factor)
 
         self.query_projection = LinearProjection(hidden_size, hidden_size, 1)
         self.key_projection = LinearProjection(hidden_size, hidden_size, n_chunks)
@@ -63,12 +63,12 @@ class NeuralMemory(nn.Module):
         return [
             p
             for n, p in self.named_parameters()
-            if not n.startswith("memory_module.") and p.requires_grad
+            if not n.startswith("memory_network.") and p.requires_grad
         ]
 
     def _initialize_momentum_buffers(self) -> None:
         """Initialize momentum states as buffers for each memory module parameter."""
-        for name, param in self.memory_module.named_parameters():
+        for name, param in self.memory_network.named_parameters():
             self.register_buffer(
                 f"momentum_{name.replace('.', '_')}", torch.zeros_like(param)
             )
@@ -76,7 +76,7 @@ class NeuralMemory(nn.Module):
     def _get_momentum_dict(self, batch_size) -> TensorDict:
         """Return a dictionary of momentum states, reshaped for batch processing."""
         momentum_dict = {}
-        for name, _ in self.memory_module.named_parameters():
+        for name, _ in self.memory_network.named_parameters():
             buffer_name = f"momentum_{name.replace('.', '_')}"
             momentum = getattr(self, buffer_name)
             # Expand to match batch size
@@ -107,7 +107,7 @@ class NeuralMemory(nn.Module):
         targets: torch.Tensor,
         adaptive_lr: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        preds = functional_call(self.memory_module, params, inputs)
+        preds = functional_call(self.memory_network, params, inputs)
         loss = F.mse_loss(preds, targets, reduction="none").mean(dim=-1)
         weighted_loss = loss * adaptive_lr.squeeze()
         total_loss = weighted_loss.sum()
@@ -115,11 +115,11 @@ class NeuralMemory(nn.Module):
 
     def retrieve(self, x: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            params_dict = dict(self.memory_module.named_parameters())
+            params_dict = dict(self.memory_network.named_parameters())
             x = self._add_batch_dim(x)
             q = self.query_projection(x, is_generating=False).squeeze()
             q = l2_norm(q)
-            retrieved = functional_call(self.memory_module, params_dict, q)
+            retrieved = functional_call(self.memory_network, params_dict, q)
 
         return retrieved
 
@@ -128,7 +128,7 @@ class NeuralMemory(nn.Module):
 
         is_generating = x.shape[1] == 1
 
-        params_dict = dict(self.memory_module.named_parameters())
+        params_dict = dict(self.memory_network.named_parameters())
 
         q = self.query_projection(x, is_generating)
         q = l2_norm(q)
@@ -155,7 +155,7 @@ class NeuralMemory(nn.Module):
             per_chunk_grads = TensorDict(per_chunk_grads)
 
             temp_updated_params = {}
-            for name, param in self.memory_module.named_parameters():
+            for name, param in self.memory_network.named_parameters():
                 grad = per_chunk_grads[name].mean(dim=0)
                 momentum = momentum_dict[name]
 
@@ -178,8 +178,8 @@ class NeuralMemory(nn.Module):
             updated_params_dict = temp_updated_params
 
         else:
-            updated_params_dict = dict(self.memory_module.named_parameters())
+            updated_params_dict = dict(self.memory_network.named_parameters())
 
-        retrieved = functional_call(self.memory_module, updated_params_dict, q)
+        retrieved = functional_call(self.memory_network, updated_params_dict, q)
 
         return retrieved

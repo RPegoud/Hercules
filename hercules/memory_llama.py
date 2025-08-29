@@ -1,25 +1,34 @@
 import torch.nn as nn
 import torch
 from transformers import LlamaForCausalLM
-from typing import List, Union
+from typing import List
 from colorama import Style, Fore
 from peft import LoraConfig, get_peft_model, TaskType
 from hercules import NeuralMemory
 from omegaconf.listconfig import ListConfig
 from peft import PeftModel
 from dataclasses import dataclass
+from torch.nn.modules.container import ModuleList
 
 
 @dataclass
 class MemoryStatistics:
     layer: int
-    gate_norm: float
     gate_mean: float
-    gate_grad_norm: float
-    mac_norm: float
-    mac_grad_norm: float
     mac_proj_memory_w_norm: float
     memory_contrib_ratio: float
+
+
+TRAINABLE_LAYERS_PER_ARCH = {
+    "context": {
+        "include": ["mac_projection", "gate_projection", "memory_module"],
+        "exclude": ["memory_network"],
+    },
+    "layer": {
+        "include": ["memory_module"],
+        "exclude": ["memory_network"],
+    },
+}
 
 
 class MemoryLlama(nn.Module):
@@ -54,19 +63,19 @@ class MemoryLlama(nn.Module):
             memory_layer_id = [memory_layer_id]
         self.memory_layer_ids = memory_layer_id
 
-        self.neural_memory = nn.ModuleList(
+        self.memory_modules = nn.ModuleList(
             [NeuralMemory(**neural_memory_config) for _ in self.memory_layer_ids]
         )
 
         n_memory_params = 0
-        for memory_module in self.neural_memory:
+        for memory_module in self.memory_modules:
             n_memory_params += sum(p.numel() for p in memory_module.parameters())
         self.n_memory_params = n_memory_params
 
         print(f"{Fore.BLUE}Injecting Memory as a {memory_arch.capitalize()} layers ...")
         memory_llama = inject_memory_modules(
             llama=llama,
-            memory_modules=self.neural_memory,
+            memory_modules=self.memory_modules,
             layer_ids=self.memory_layer_ids,
             track_memory_statistics=track_memory_statistics,
             arch=memory_arch,
@@ -77,22 +86,54 @@ class MemoryLlama(nn.Module):
                 r=lora_rank,
                 lora_alpha=lora_alpha,
                 target_modules=list(lora_target_modules),
-                modules_to_save=["neural_memory"],
+                modules_to_save=TRAINABLE_LAYERS_PER_ARCH[memory_arch]["include"],
                 lora_dropout=lora_dropout,
                 bias="none",
                 task_type=TaskType.CAUSAL_LM,
             )
             print(f"{Fore.BLUE}Applying LoRA config ...")
             memory_llama = get_peft_model(memory_llama, lora_config)
-
-            # enable gradients for gate parameters
-            for n, p in memory_llama.named_parameters():
-                if "neural_memory" in n:
-                    p.requires_grad = True
-                    if "memory_module" in n:
-                        p.requires_grad = False
+            memory_llama = self.set_trainable_layers(
+                model=memory_llama, layer_dict=TRAINABLE_LAYERS_PER_ARCH[memory_arch]
+            )
 
         self.model = memory_llama
+
+    def forward(self, input_ids, attention_mask, labels, **kwargs) -> torch.Tensor:
+        return self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            **kwargs,
+        )
+
+    def generate(self, input_ids, attention_mask, **kwargs) -> torch.Tensor:
+        return self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs,
+        )
+
+    def set_trainable_layers(
+        self, model: LlamaForCausalLM, layer_dict: dict[str, list[str]]
+    ) -> LlamaForCausalLM:
+        """
+        Set requires_grad=True for params whose name contains something in `include`,
+        and requires_grad=False if in `exclude`.\\
+        LoRA adapters are already handled by PEFT (requires_grad=True), this method
+        is used to re-enable custom memory modules.
+        """
+        include = layer_dict["include"] or []
+        exclude = layer_dict["exclude"] or []
+
+        for n, p in model.named_parameters():
+            if any(inc in n for inc in include):
+                p.requires_grad = True
+
+            if any(ex in n for ex in exclude):
+                p.requires_grad = False
+
+        return model
 
     def __getattribute__(self, attr):
         try:
@@ -101,20 +142,23 @@ class MemoryLlama(nn.Module):
             model = super().__getattribute__("model")
             return getattr(model, attr)
 
-    def forward(self, input_ids, attention_mask, labels, **kwargs):
-        return self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-            **kwargs,
-        )
+    @property
+    def get_llama_model(self) -> LlamaForCausalLM:
+        """Returns the base llama model without the LoRA wrapper."""
+        return self.model.get_base_model()
 
-    def generate(self, input_ids, attention_mask, **kwargs):
-        return self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **kwargs,
-        )
+    @property
+    def layers(self) -> ModuleList:
+        """
+        MemoryLlama has the following model wrapper hierarchy:
+        - <class '__main__.MemoryLlama'>
+        - <class 'peft.peft_model.PeftModelForCausalLM'>
+        - <class 'transformers.models.llama.modeling_llama.LlamaForCausalLM'>
+        - <class 'transformers.models.llama.modeling_llama.LlamaModel'>
+
+        This property returns the layers of `LlamaModel`.
+        """
+        return self.model.get_base_model().model.layers
 
     def save(self, path: str) -> None:
         self.model.save_pretrained(path, safe_serialization=True)
@@ -212,10 +256,12 @@ class LlamaMemoryAsContext(nn.Module):
         # original model.
         self.gate_projection = nn.Linear(hidden_size, hidden_size, bias=True)
         nn.init.zeros_(self.gate_projection.weight)
+        # nn.init.constant_(self.gate_projection.weight, 1e-4)
         nn.init.constant_(self.gate_projection.bias, -6)  # sigmoid(-6) = 0.0025
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
-        context = self.memory_module.retrieve(hidden_states)
+        with torch.autocast(device_type="cuda", dtype=torch.float32):
+            context = self.memory_module.retrieve(hidden_states)
         norm_hidden_states = self.llama_layer.input_layernorm(hidden_states)
         memory_sequence = torch.cat([context, norm_hidden_states], dim=-1)
         mac_sequence = self.mac_projection(memory_sequence)
@@ -224,41 +270,30 @@ class LlamaMemoryAsContext(nn.Module):
             mac_sequence, attention_mask=attention_mask, **kwargs
         )
         attn_outputs = attn[0]
-        # TODO: ensure autocast to bf32?
-        memory_outputs = self.memory_module(attn_outputs)
+
+        with torch.autocast(device_type="cuda", dtype=torch.float32):
+            memory_outputs = self.memory_module(attn_outputs)
 
         residual_attn = attn_outputs + hidden_states
         norm_residual_attn = self.llama_layer.post_attention_layernorm(residual_attn)
         llama_outputs = self.llama_layer.mlp(norm_residual_attn) + residual_attn
 
-        memory_gate_values = self.gate_projection(llama_outputs)
+        memory_gate_values = torch.sigmoid(self.gate_projection(llama_outputs))
         memory_augmented_outputs = llama_outputs + memory_outputs * memory_gate_values
         block_outputs = (memory_augmented_outputs,) + attn[1:]
 
         if self.track_memory_statistics:
-            memory_gate_values.retain_grad()
-            mac_sequence.retain_grad()
-
             self.last_stats = MemoryStatistics(
                 layer=self.layer_id,
-                gate_norm=memory_gate_values.norm().item(),
                 gate_mean=memory_gate_values.mean().item(),
-                gate_grad_norm=(
-                    memory_gate_values.grad.norm().item()
-                    if memory_gate_values.grad is not None
-                    else 0.0
-                ),
-                mac_norm=mac_sequence.norm().item(),
-                mac_grad_norm=(
-                    mac_sequence.grad.norm().item()
-                    if mac_sequence.grad is not None
-                    else 0.0
-                ),
                 mac_proj_memory_w_norm=self.mac_projection.weight[:, self.hidden_size :]
                 .norm()
                 .item(),
                 memory_contrib_ratio=(
-                    (memory_outputs.norm() / (llama_outputs.norm() + 1e-8)).item()
+                    (
+                        (memory_outputs * memory_gate_values).norm()
+                        / (llama_outputs.norm() + 1e-8)
+                    ).item()
                 ),
             )
 

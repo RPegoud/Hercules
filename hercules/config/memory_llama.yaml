@@ -1,0 +1,56 @@
+experiment:
+  name: "eduweb_pt"
+  seed: 0
+  epochs: 1
+  eduweb_train_batch_size: 6
+  eduweb_val_batch_size: 3
+  babilong_test_batch_size: 4
+  learning_rate: 4e-4
+  weight_decay: 0.1
+
+  num_train_samples: 1e4 # number of eduweb samples used for training
+  num_val_samples: 2000 # number of samples used to compute the average validation loss
+  num_eval: 100 # number of evaluations during training
+  num_test_samples: 100
+  max_seq_len: 2048 # maximum sequence length of training samples
+
+  train_task_name: "2k" # the maximal sequence length of the Babilong samples
+  test_task_name: "2k"
+  train_splits: ~ # Babilong splits used in training
+  test_splits: "all" # Babilong splits used in testing
+  eval_with_generate: true # whether to evaluate the model performance with `.generate()`
+  max_gen_tokens: 25 # maximum number of tokens generated for evaluation
+
+  save_final_model: false
+  log_experiment: false # whether to log the experiment with wandb
+  resume_from_checkpoint: true # whether to load an existing model checkpoint
+  checkpoint_name: "checkpoints/memory_llama/08-29_19-30/best_loss" # name of the experiment to load the state from
+
+  run_name: "TRAIN:Llama1B|MAC|m2l|t1e4"
+
+neural_memory:
+  mlp_depth: 3
+  mlp_expansion_factor: 2
+  max_adaptive_lr: 1e-2 # maximum adaptive learning rate
+  n_chunks: 512 # the number of chunks created when chunking the input sequence
+
+memory_llama:
+  memory_arch: "context" # the titans architecture to inject, one of ["layer", "context"]
+  llama_hf_path: "meta-llama/Llama-3.2-1B"
+  memory_layer_id: [1, 3, 5, 7, 9, 11, 13, 15] # the index of the layer to augment with a memory module
+  use_lora: true
+  track_memory_statistics: true
+
+  
+lora:
+  lora_rank: 16        # The rank of the LoRA matrices.
+  lora_alpha: 32       # The scaling factor for the LoRA weights.
+  lora_dropout: 0.05
+  lora_target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "down_proj"
+    - "up_proj"
