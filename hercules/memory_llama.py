@@ -15,6 +15,8 @@ from torch.nn.modules.container import ModuleList
 class MemoryStatistics:
     layer: int
     gate_mean: float
+    gate_max: float
+    gate_min: float
     mac_proj_memory_w_norm: float
     memory_contrib_ratio: float
 
@@ -262,6 +264,7 @@ class LlamaMemoryAsContext(nn.Module):
     def forward(self, hidden_states, attention_mask=None, **kwargs):
         with torch.autocast(device_type="cuda", dtype=torch.float32):
             context = self.memory_module.retrieve(hidden_states)
+
         norm_hidden_states = self.llama_layer.input_layernorm(hidden_states)
         memory_sequence = torch.cat([context, norm_hidden_states], dim=-1)
         mac_sequence = self.mac_projection(memory_sequence)
@@ -274,25 +277,28 @@ class LlamaMemoryAsContext(nn.Module):
         with torch.autocast(device_type="cuda", dtype=torch.float32):
             memory_outputs = self.memory_module(attn_outputs)
 
-        residual_attn = attn_outputs + hidden_states
+        gate = torch.sigmoid(self.gate_projection(attn_outputs))
+        memory_augmented_attn = (1 - gate) * attn_outputs + gate * memory_outputs
+
+        residual_attn = memory_augmented_attn + hidden_states
         norm_residual_attn = self.llama_layer.post_attention_layernorm(residual_attn)
         llama_outputs = self.llama_layer.mlp(norm_residual_attn) + residual_attn
 
-        memory_gate_values = torch.sigmoid(self.gate_projection(llama_outputs))
-        memory_augmented_outputs = llama_outputs + memory_outputs * memory_gate_values
-        block_outputs = (memory_augmented_outputs,) + attn[1:]
+        block_outputs = (llama_outputs,) + attn[1:]
 
         if self.track_memory_statistics:
             self.last_stats = MemoryStatistics(
                 layer=self.layer_id,
-                gate_mean=memory_gate_values.mean().item(),
+                gate_mean=gate.mean().item(),
+                gate_min=gate.min().item(),
+                gate_max=gate.max().item(),
                 mac_proj_memory_w_norm=self.mac_projection.weight[:, self.hidden_size :]
                 .norm()
                 .item(),
                 memory_contrib_ratio=(
                     (
-                        (memory_outputs * memory_gate_values).norm()
-                        / (llama_outputs.norm() + 1e-8)
+                        (memory_outputs * gate).norm()
+                        / ((1 - gate) * attn_outputs + 1e-8).norm()
                     ).item()
                 ),
             )

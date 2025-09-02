@@ -14,9 +14,11 @@ shell:
 	$(SIF_NAME) bash -c "cd Hercules && exec bash"
 
 pt_ew: # pre-training on Eduweb
+# 	PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 	accelerate launch --mixed_precision=bf16 -m hercules.scripts.eduweb_memory_pretraining 
 
 pt_ew_ls: # pre-training on Eduweb with wandb loging and model saving
+# 	PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 	accelerate launch --mixed_precision=bf16 -m hercules.scripts.eduweb_memory_pretraining \
 	experiment.save_final_model=True \
 	experiment.log_experiment=True

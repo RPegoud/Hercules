@@ -187,6 +187,8 @@ def train_val_one_epoch(
                 if memory_stats:
                     metrics = {
                         "gate_mean": "Gate Mean",
+                        "gate_min": "Gate Min",
+                        "gate_max": "Gate Max",
                         "mac_proj_memory_w_norm": "MAC Proj Memory Weight Norm",
                         "memory_contrib_ratio": "Memory Contribution Ratio",
                     }
@@ -294,7 +296,6 @@ def evaluate(
             unwrapped_model = accelerator.unwrap_model(model)
             prompt_ids = batch["prompt_input_ids"]
             prompt_attention_mask = batch["prompt_attention_mask"]
-
             generated_ids = unwrapped_model.generate(
                 input_ids=prompt_ids,
                 attention_mask=prompt_attention_mask,
@@ -358,7 +359,10 @@ def main(cfg: DictConfig):
             neural_memory_config=cfg.neural_memory,
             **cfg.memory_llama,
         )
-        logger.log(f"Validation causal loss: {state.lowest_val_loss}", "blue", "normal")
+        val_loss = open(
+            os.path.join(cfg.experiment.checkpoint_name, "loss_value.txt")
+        ).read()
+        logger.log(f"Validation causal loss: {val_loss}", "blue", "normal")
 
     else:
         # --- Training ---
