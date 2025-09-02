@@ -5,8 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
 from torch.func import functional_call, vmap
-
-from .layers import AdaptiveWeight, LinearProjection, SlidingWindowAttention, ResLinear
+from colorama import Style, Fore
+from .layers import AdaptiveWeight, LinearProjection, ResLinear
 
 
 def flatten_and_expand(x: torch.Tensor, n: int):
@@ -25,50 +25,26 @@ class NeuralMemory(nn.Module):
         mlp_depth: int,
         mlp_expansion_factor: int,
         max_adaptive_lr: float,
-        n_chunks: int,
     ) -> None:
         super(NeuralMemory, self).__init__()
-        self.n_chunks = n_chunks
         self.added_padding = None
 
-        self.memory_module = ResLinear(hidden_size, mlp_depth, mlp_expansion_factor)
+        self.memory_network = ResLinear(hidden_size, mlp_depth, mlp_expansion_factor)
 
-        self.query_projection = LinearProjection(hidden_size, hidden_size, 1)
-        self.key_projection = LinearProjection(hidden_size, hidden_size, n_chunks)
-        self.value_projection = LinearProjection(hidden_size, hidden_size, n_chunks)
+        self.key_projection = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.value_projection = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.query_projection = nn.Linear(hidden_size, hidden_size, bias=False)
 
-        # α: forget gate
-        self.adaptive_forget_projection = AdaptiveWeight(
-            hidden_size, 1, n_chunks, max_weight=1
-        )
-        # θ: data-dependent learning rate
-        self.adaptive_lr_projection = AdaptiveWeight(
-            hidden_size, 1, n_chunks, max_weight=max_adaptive_lr
-        )
-        # η: data-dependent surprise momentum
-        self.adaptive_momentum_projection = AdaptiveWeight(
-            hidden_size, 1, n_chunks, max_weight=1
-        )
+        self.adaptive_forget_projection = nn.Linear(hidden_size, 1)
+        self.adaptive_lr_projection = nn.Linear(hidden_size, 1)
+        self.adaptive_momentum_projection = nn.Linear(hidden_size, 1)
 
-        self.momentum_states = nn.ParameterDict()
+        self.max_adaptive_lr = max_adaptive_lr
         self._initialize_momentum_buffers()
-
-    @property
-    def gate_parameters(self) -> List[nn.Parameter]:
-        """
-        The forget gate, adaptive learning rate and momentum are trained with ``backward()`` at train time
-        The memory module in itself (residual MLP) is trained at inference time using a custom logic that's
-        not compatible with ``backward()``
-        """
-        return [
-            p
-            for n, p in self.named_parameters()
-            if not n.startswith("memory_module.") and p.requires_grad
-        ]
 
     def _initialize_momentum_buffers(self) -> None:
         """Initialize momentum states as buffers for each memory module parameter."""
-        for name, param in self.memory_module.named_parameters():
+        for name, param in self.memory_network.named_parameters():
             self.register_buffer(
                 f"momentum_{name.replace('.', '_')}", torch.zeros_like(param)
             )
@@ -76,7 +52,7 @@ class NeuralMemory(nn.Module):
     def _get_momentum_dict(self, batch_size) -> TensorDict:
         """Return a dictionary of momentum states, reshaped for batch processing."""
         momentum_dict = {}
-        for name, _ in self.memory_module.named_parameters():
+        for name, _ in self.memory_network.named_parameters():
             buffer_name = f"momentum_{name.replace('.', '_')}"
             momentum = getattr(self, buffer_name)
             # Expand to match batch size
@@ -84,18 +60,9 @@ class NeuralMemory(nn.Module):
             momentum_dict[name] = momentum
         return TensorDict(momentum_dict)
 
-    def _pad_to_chunk_size(self, x: torch.Tensor) -> torch.Tensor:
-        """Adds necessary right padding for the sequence to be split in chunks."""
-        seq_len = x.size(1)
-        if not seq_len % self.n_chunks == 0:
-            pad = (seq_len // self.n_chunks) * self.n_chunks + self.n_chunks - seq_len
-            self.added_padding = -pad
-            x = F.pad(x, (0, 0, 0, pad))
-        return x
-
     @staticmethod
-    def _add_batch_dim(x: torch.Tensor) -> torch.Tensor:
-        """Adds a batch dimension to the input if needed"""
+    def _maybe_add_batch(x: torch.Tensor) -> torch.Tensor:
+        """Add a batch dimension if the input is 2-dimensional."""
         if x.dim() == 2:
             x = x.unsqueeze(0)
         return x
@@ -105,72 +72,92 @@ class NeuralMemory(nn.Module):
         params: TensorDict,
         inputs: torch.Tensor,
         targets: torch.Tensor,
-        adaptive_lr: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        preds = functional_call(self.memory_module, params, inputs)
+        preds = functional_call(self.memory_network, params, inputs)
         loss = F.mse_loss(preds, targets, reduction="none").mean(dim=-1)
-        weighted_loss = loss * adaptive_lr.squeeze()
-        total_loss = weighted_loss.sum()
+        total_loss = loss.sum()
         return total_loss, loss
 
+    @torch.no_grad()
+    def retrieve(self, x: torch.Tensor) -> torch.Tensor:
+        x = self._maybe_add_batch(x)
+        memory_net_params = dict(self.memory_network.named_parameters())
+        q = l2_norm(self.query_projection(x))
+        return functional_call(self.memory_network, memory_net_params, q)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self._add_batch_dim(x)
+        x = self._maybe_add_batch(x)
+        batch_size, seq_len, _ = x.shape
+        is_generating = seq_len == 1
 
-        is_generating = x.shape[1] == 1
+        if is_generating:
+            q = l2_norm(self.query_projection(x))
+            current_params = dict(self.memory_network.named_parameters())
+            return functional_call(self.memory_network, current_params, q)
 
-        params_dict = dict(self.memory_module.named_parameters())
+        outputs = []
 
-        q = self.query_projection(x, is_generating)
-        q = l2_norm(q)
+        current_params = {
+            name: param.expand(batch_size, *param.shape)
+            for name, param in self.memory_network.named_parameters()
+        }
+        current_momentum = self._get_momentum_dict(batch_size)
 
-        # when the model is generating, avoid the k,v computation and the update
-        if not is_generating:
-            x = self._pad_to_chunk_size(x)
-            q = q.squeeze(1)
-            v = self.value_projection(x)
-            k = self.key_projection(x)
-            k = l2_norm(k)
+        q = l2_norm(F.silu(self.query_projection(x)))
+        k = l2_norm(F.silu(self.key_projection(x)))
+        v = F.silu(self.value_projection(x))
 
-            momentum_dict = self._get_momentum_dict(x.size(0))
+        theta_t = torch.sigmoid(self.adaptive_lr_projection(x)) * self.max_adaptive_lr
+        alpha_t = torch.sigmoid(self.adaptive_forget_projection(x))
+        eta_t = torch.sigmoid(self.adaptive_momentum_projection(x))
 
-            adaptive_lr = self.adaptive_lr_projection(x)
-            adaptive_forget = self.adaptive_forget_projection(x)
-            adaptive_momentum = self.adaptive_momentum_projection(x)
+        for t in range(seq_len):
+            updated_params_functional = {}
+            next_momentum_functional = {}
 
             grad_fn = torch.func.grad(self._associative_memory_loss, has_aux=True)
-            per_chunk_grad_fn = vmap(grad_fn, in_dims=(None, 1, 1, 1))
-            per_chunk_grads, per_chunk_loss = per_chunk_grad_fn(
-                params_dict, k, v, adaptive_lr
+            per_batch_grads, _ = vmap(grad_fn, in_dims=(0, 0, 0))(
+                current_params, k[:, t], v[:, t]
             )
-            per_chunk_grads = TensorDict(per_chunk_grads)
 
-            temp_updated_params = {}
-            for name, param in self.memory_module.named_parameters():
-                grad = per_chunk_grads[name].mean(dim=0)
-                momentum = momentum_dict[name]
+            for name, param in self.memory_network.named_parameters():
+                grad = per_batch_grads[name]
+                momentum = current_momentum[name]
 
-                # TODO: should this remain chunk dependent?
-                alpha_t = adaptive_forget.mean(dim=[1, 2, 3])
-                theta_t = adaptive_lr.mean(dim=[1, 2, 3])
-                eta_t = adaptive_momentum.mean(dim=[1, 2, 3])
+                alpha = alpha_t[:, t]
+                theta = theta_t[:, t]
+                eta = eta_t[:, t]
 
-                alpha_t = flatten_and_expand(alpha_t, grad.dim())
-                eta_t = flatten_and_expand(eta_t, grad.dim())
-                theta_t = flatten_and_expand(theta_t, grad.dim())
+                # Expand gates for broadcasting with parameter shapes
+                alpha_b = flatten_and_expand(alpha, param.dim())
+                theta_b = flatten_and_expand(theta, param.dim())
+                eta_b = flatten_and_expand(eta, param.dim())
 
-                momentum = momentum.mul(eta_t).sub(theta_t * grad)
-                new_param = param * (1.0 - alpha_t) + momentum
-                temp_updated_params[name] = new_param.mean(0)
+                next_momentum = momentum.mul(eta_b) - theta_b * grad
+                next_param = param * (1.0 - alpha_b) + next_momentum
 
-                with torch.no_grad():
-                    buffer_name = f"momentum_{name.replace('.', '_')}"
-                    getattr(self, buffer_name).copy_(momentum.mean(dim=0))
+                updated_params_functional[name] = next_param
+                next_momentum_functional[name] = next_momentum
 
-            updated_params_dict = temp_updated_params
+            q_t = q[:, t].unsqueeze(1)  # Add sequence dim back
+            output_t = functional_call(
+                self.memory_network, updated_params_functional, q_t
+            )
+            outputs.append(output_t)
 
-        else:
-            updated_params_dict = dict(self.memory_module.named_parameters())
+            # truncate the gradient history
+            current_params = {
+                k: v.detach() for k, v in updated_params_functional.items()
+            }
+            current_momentum = {
+                k: v.detach() for k, v in next_momentum_functional.items()
+            }
 
-        retrieved = functional_call(self.memory_module, updated_params_dict, q)
+        with torch.no_grad():
+            for name, param in self.memory_network.named_parameters():
+                # average the final state across the batch dimension before saving
+                param.copy_(current_params[name].mean(0))
+                buffer_name = f"momentum_{name.replace('.', '_')}"
+                getattr(self, buffer_name).copy_(current_momentum[name].mean(0))
 
-        return retrieved
+        return torch.cat(outputs, dim=1)

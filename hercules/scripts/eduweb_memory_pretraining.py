@@ -1,8 +1,6 @@
-from collections import defaultdict
 import os
 import time
 from typing import Dict, Tuple
-import os
 import bitsandbytes as bnb
 import hydra
 import torch
@@ -14,11 +12,8 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
-import shutil
 from dataclasses import dataclass
-from safetensors.torch import load_file
-
-
+import json
 from hercules import (
     Logger,
     MemoryLlama,
@@ -59,11 +54,10 @@ def setup(
     # --- accelerator setup ---
     accelerator_kwargs = DistributedDataParallelKwargs(static_graph=True)
     accelerator = Accelerator(
-        gradient_accumulation_steps=cfg.experiment.gradient_accumulation_steps,
         kwargs_handlers=[accelerator_kwargs],
         log_with="wandb",
         project_config=ProjectConfiguration(
-            project_dir=f"checkpoints/{cfg.experiment.name}",
+            project_dir=f"checkpoints/memory_llama",
             automatic_checkpoint_naming=True,
         ),
     )
@@ -76,8 +70,6 @@ def setup(
     steps_per_epoch = int(
         cfg.experiment.num_train_samples // cfg.experiment.eduweb_train_batch_size
     )
-    if isinstance(cfg.experiment.gradient_accumulation_steps, int):
-        steps_per_epoch = steps_per_epoch // cfg.experiment.gradient_accumulation_steps
 
     cfg.experiment["steps_per_epoch"] = steps_per_epoch
     logger.set_experiment_name(cfg, cfg_dict)
@@ -161,31 +153,58 @@ def train_val_one_epoch(
         total=cfg.experiment.steps_per_epoch,
         disable=not accelerator.is_main_process,
     )
+
+    memory_stats = []
+
     for it, batch in enumerate(progress_bar):
-        with accelerator.accumulate(state.model):
-            state.model.train()
-            state.global_step = it * state.epoch
-            batch = {k: v for k, v in batch.items()}
+        state.model.train()
+        state.global_step = it * state.epoch
+        batch = {k: v for k, v in batch.items()}
+        outputs = state.model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
 
-            outputs = state.model(**batch)
-            loss = outputs.loss
-            accelerator.backward(loss)
+        state.optimizer.step()
+        state.optimizer.zero_grad()
+        state.scheduler.step()
 
-            state.optimizer.step()
-            state.optimizer.zero_grad()
-            state.scheduler.step()
+        train_causal_loss = loss.item()
 
-            train_causal_loss = loss.item()
-
+        # log training loss and learning rate
         if accelerator.is_main_process and cfg.experiment.log_experiment:
-            accelerator.log(
-                {
-                    "eduweb_causal_loss": train_causal_loss,
-                    "learning_rate": state.scheduler.get_lr()[0],
-                    "epoch": state.epoch,
-                    "step": state.global_step,
-                }
-            )
+            logs = {}
+            logs["eduweb_causal_loss"] = train_causal_loss
+            logs["learning_rate"] = state.scheduler.get_lr()[0]
+            logs["epoch"] = state.epoch
+            logs["step"] = state.global_step
+
+            if cfg.memory_llama.track_memory_statistics:
+                for layer_id, layer in enumerate(state.model.layers):
+                    layer = state.model.layers[layer_id]
+                    if hasattr(layer, "last_stats") and layer.last_stats is not None:
+                        memory_stats.append(layer.last_stats.__dict__)
+
+                if memory_stats:
+                    metrics = {
+                        "gate_mean": "Gate Mean",
+                        "gate_min": "Gate Min",
+                        "gate_max": "Gate Max",
+                        "mac_proj_memory_w_norm": "MAC Proj Memory Weight Norm",
+                        "memory_contrib_ratio": "Memory Contribution Ratio",
+                    }
+
+                    for metric_key, metric_name in metrics.items():
+                        layer_values = {}
+
+                        for s in memory_stats:
+                            layer_id = s["layer"]
+                            layer_values[f"Layer {layer_id}"] = s[metric_key]
+
+                        if layer_values:
+                            logs[f"Memory Stats/{metric_name}"] = layer_values
+
+                memory_stats.clear()
+            accelerator.log(logs)
 
         # best validation loss checkpoints
         if (it + 1) % (
@@ -253,89 +272,70 @@ def evaluate(
     accelerator: Accelerator,
     logger: Logger,
 ):
+    model.eval()
+    accuracies = {}
 
-    if test_loaders:
-        model.eval()
-        for test_split, test_loader in test_loaders.items():
-            num_correct = 0
-            test_progress_bar = tqdm(
-                test_loader,
-                disable=not accelerator.is_main_process,
+    for test_split, test_loader in test_loaders.items():
+        accuracies[test_split] = 0
+
+        test_progress_bar = tqdm(
+            test_loader,
+            disable=not accelerator.is_main_process,
+        )
+        logger.log(
+            f"Task: {cfg.experiment.test_task_name}, Split: {test_split}",
+            "cyan",
+            style="normal",
+        )
+
+        for it, batch in enumerate(test_progress_bar):
+            batch = {
+                k: v.to(accelerator.device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+            unwrapped_model = accelerator.unwrap_model(model)
+            prompt_ids = batch["prompt_input_ids"]
+            prompt_attention_mask = batch["prompt_attention_mask"]
+            generated_ids = unwrapped_model.generate(
+                input_ids=prompt_ids,
+                attention_mask=prompt_attention_mask,
+                max_new_tokens=cfg.experiment.max_gen_tokens,
+                pad_token_id=tokenizer.eos_token_id,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
             )
-            logger.log(
-                f"Task: {cfg.experiment.test_task_name}, Split: {test_split}",
-                "cyan",
-                style="normal",
+
+            newly_generated_ids = generated_ids[:, -cfg.experiment.max_gen_tokens :]
+
+            generated_texts = tokenizer.batch_decode(
+                newly_generated_ids, skip_special_tokens=False
             )
 
-            device = accelerator.device
-            for it, batch in enumerate(test_progress_bar):
-                batch = {
-                    k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
-                }
-                outputs = model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    labels=batch["labels"],
-                )
-                test_causal_loss = outputs.loss.item()
+            target_texts = batch["target_text"]
 
-                if cfg.experiment.eval_with_generate:
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    prompt_ids = batch["prompt_input_ids"]
-                    prompt_attention_mask = batch["prompt_attention_mask"]
+            for gen_text, target_text in zip(generated_texts, target_texts):
+                if target_text in gen_text:
+                    accuracies[test_split] += 1
 
-                    generated_ids = unwrapped_model.generate(
-                        input_ids=prompt_ids,
-                        attention_mask=prompt_attention_mask,
-                        max_new_tokens=cfg.experiment.max_gen_tokens,
-                        pad_token_id=tokenizer.eos_token_id,
-                        do_sample=False,
-                        temperature=None,
-                        top_p=None,
-                        top_k=None,
-                    )
+    for split in accuracies.keys():
+        accuracies[split] /= (it + 1) * cfg.experiment.babilong_test_batch_size
 
-                    newly_generated_ids = generated_ids[
-                        :, -cfg.experiment.max_gen_tokens :
-                    ]
+    with open(
+        os.path.join(
+            f"results/memory_llama_{cfg.memory_llama.memory_arch}", f"{logger.ts}.json"
+        ),
+        "w",
+    ) as f:
+        json.dump(accuracies, f, indent=4)
 
-                    generated_texts = tokenizer.batch_decode(
-                        newly_generated_ids, skip_special_tokens=False
-                    )
-
-                    target_texts = batch["target_text"]
-
-                    for gen_text, target_text in zip(generated_texts, target_texts):
-                        if target_text in gen_text:
-                            logger.log(
-                                f"Target: {target_text}\nGenerated:{gen_text}\n",
-                                "green",
-                                style="normal",
-                            )
-                            num_correct += 1
-                    accuracy = num_correct / (
-                        (it + 1) * cfg.experiment.babilong_test_batch_size
-                    )
-
-                else:
-                    accuracy = None
-
-                metrics_to_log = {
-                    f"accuracy_{test_split}": accuracy,
-                    f"test_causal_loss_{test_split}": test_causal_loss,
-                    "iteration": it,
-                }
-                accelerator.log(metrics_to_log)
-
-                if it >= cfg.experiment.num_test_it:
-                    break
+    accelerator.log({f"test/": {k: float(v) for k, v in accuracies.items()}})
 
 
 @hydra.main(
     config_path="../config",
-    config_name="eduweb_pt.yaml",
+    config_name="memory_llama.yaml",
     version_base="1.3",
 )
 def main(cfg: DictConfig):
@@ -359,7 +359,10 @@ def main(cfg: DictConfig):
             neural_memory_config=cfg.neural_memory,
             **cfg.memory_llama,
         )
-        logger.log(f"Validation causal loss: {state.lowest_val_loss}", "blue", "normal")
+        val_loss = open(
+            os.path.join(cfg.experiment.checkpoint_name, "loss_value.txt")
+        ).read()
+        logger.log(f"Validation causal loss: {val_loss}", "blue", "normal")
 
     else:
         # --- Training ---
@@ -396,13 +399,6 @@ def main(cfg: DictConfig):
 
     if cfg.experiment.log_experiment:
         accelerator.end_training()
-
-    if cfg.experiment.save_final_model:
-        m = accelerator.unwrap_model(state.model)
-        save_dir = os.path.join(f"models/{cfg.experiment.name}/", logger.ts)
-        os.makedirs(save_dir, exist_ok=True)
-        torch.save(m.neural_memory, os.path.join(save_dir, "neural_memory.pt"))
-        logger.log(f"Saved Neural Memory Module under: {save_dir}", "green")
 
 
 if __name__ == "__main__":

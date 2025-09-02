@@ -41,6 +41,8 @@ class ResLinear(nn.Module):
                 for dim_in, dim_out in layer_sizes
             ]
         )
+        nn.init.zeros_(self.weights)
+
         self.projections = nn.ParameterList(
             [
                 (
@@ -71,13 +73,17 @@ class LinearProjection(nn.Module):
         n_chunks: int,
     ) -> None:
         super(LinearProjection, self).__init__()
+        self.n_chunks = n_chunks
         self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         nn.init.xavier_uniform_(self.linear.weight)
 
-    def forward(self, x: torch.Tensor, is_generating: bool = False):
-        if not is_generating:
-            x = self.reshape(x)
+    def forward(self, x: torch.Tensor):
+        # chunk the input only if `n_chunks` is greater than one and
+        # the LLM is not generating
+        # is_generating = x.shape[1] == 1
+        # if not is_generating and self.n_chunks > 1:
+        #     x = self.reshape(x)
         x = self.linear(x)
         x = F.silu(x)
 
@@ -90,7 +96,7 @@ class AdaptiveWeight(nn.Module):
         in_dim: int,
         out_dim: int,
         n_chunks: int,
-        max_weight: float,
+        max_weight: float = 1.0,
     ):
         super(AdaptiveWeight, self).__init__()
         self.reshape = Rearrange("b (n c) h -> b c n h", c=n_chunks)
@@ -98,29 +104,7 @@ class AdaptiveWeight(nn.Module):
         self.max_weight = max_weight
 
     def forward(self, x: torch.Tensor):
-        x = self.reshape(x)
+        # x = self.reshape(x)
         x = self.linear(x)
         lr = F.sigmoid(x)
         return lr * self.max_weight  # rescale lr
-
-
-class SlidingWindowAttention(nn.Module):
-    """Self attention block with sliding window."""
-
-    def __init__(self, input_dim: int, num_heads: int, window_size: int):
-        super(SlidingWindowAttention, self).__init__()
-        self.window_size = window_size
-        self.attention = nn.MultiheadAttention(input_dim, num_heads, batch_first=True)
-
-    def forward(self, x: torch.Tensor):
-        seq_len = x.size(1)
-        attn_mask = torch.zeros(seq_len, seq_len).bool()
-        attn_mask = attn_mask.to(x.device)
-        indices = torch.arange(seq_len, device=x.device)
-        # sliding attention mask
-        attn_mask = (indices[:, None] - indices[None, :]).abs() <= (
-            self.window_size // 2
-        )
-
-        output, _ = self.attention(x, x, x, attn_mask=attn_mask)
-        return output

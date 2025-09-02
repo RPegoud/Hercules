@@ -154,6 +154,12 @@ def get_specific_split_bl_dataloaders(
             full_test_ds_dict = load_dataset(
                 "RMT-team/babilong-train-5k-samples", name=cfg.experiment.test_task_name
             )
+            if cfg.experiment.num_test_samples is not None:
+                full_test_ds_dict = {
+                    split: ds.select(range(cfg.experiment.num_test_samples))
+                    for split, ds in full_test_ds_dict.items()
+                }
+
             for split in test_splits:
                 if split in full_test_ds_dict:
                     test_loaders[split] = DataLoader(
