@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 import bitsandbytes as bnb
 import hydra
 import torch
-from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler
+from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler, ConstantLR
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import ProjectConfiguration
 from dotenv import dotenv_values
@@ -20,6 +20,16 @@ from hercules import (
     get_eduweb_dataloader,
     get_specific_split_bl_dataloaders,
 )
+from torch.optim import Optimizer
+
+
+def get_scheduler(optimizer: Optimizer, cfg: DictConfig) -> LRScheduler:
+    if cfg.experiment.scheduler == "cosine":
+        return CosineAnnealingLR(
+            optimizer, T_max=cfg.experiment.steps_per_epoch * cfg.experiment.epochs
+        )
+    else:
+        return ConstantLR(optimizer, factor=1, total_iters=0)
 
 
 @dataclass
@@ -30,6 +40,7 @@ class TrainState:
     epoch: int
     global_step: int
     lowest_val_loss: float | None = None
+    recent_ckpt_idx: int = 0
 
 
 def setup(
@@ -56,6 +67,7 @@ def setup(
     accelerator = Accelerator(
         kwargs_handlers=[accelerator_kwargs],
         log_with="wandb",
+        gradient_accumulation_steps=cfg.experiment.gradient_accumulation_steps,
         project_config=ProjectConfiguration(
             project_dir=f"checkpoints/memory_llama",
             automatic_checkpoint_naming=True,
@@ -87,9 +99,7 @@ def setup(
         lr=cfg.experiment.learning_rate,
         weight_decay=cfg.experiment.weight_decay,
     )
-    scheduler = CosineAnnealingLR(
-        optimizer, T_max=steps_per_epoch * cfg.experiment.epochs
-    )
+    scheduler = get_scheduler(optimizer, cfg)
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
@@ -124,7 +134,6 @@ def setup(
         scheduler=scheduler,
         epoch=0,
         global_step=0,
-        lowest_val_loss=None,
     )
 
     return (
@@ -157,16 +166,16 @@ def train_val_one_epoch(
     memory_stats = []
 
     for it, batch in enumerate(progress_bar):
-        state.model.train()
-        state.global_step = it * state.epoch
-        batch = {k: v for k, v in batch.items()}
-        outputs = state.model(**batch)
-        loss = outputs.loss
-        accelerator.backward(loss)
+        with accelerator.accumulate(state.model):
+            state.model.train()
+            state.optimizer.zero_grad()
+            state.global_step = (it + 1) * (state.epoch + 1)
 
-        state.optimizer.step()
-        state.optimizer.zero_grad()
-        state.scheduler.step()
+            batch = {k: v for k, v in batch.items()}
+            outputs = state.model(**batch)
+            loss = outputs.loss
+            accelerator.backward(loss)
+            state.optimizer.step()
 
         train_causal_loss = loss.item()
 
@@ -187,10 +196,12 @@ def train_val_one_epoch(
                 if memory_stats:
                     metrics = {
                         "gate_mean": "Gate Mean",
+                        "gate_std": "Gate Std",
                         "gate_min": "Gate Min",
                         "gate_max": "Gate Max",
                         "mac_proj_memory_w_norm": "MAC Proj Memory Weight Norm",
-                        "memory_contrib_ratio": "Memory Contribution Ratio",
+                        "global_avg_memory_contrib_ratio": "Global Average Memory Contribution Ratio",
+                        "per_token_avg_memory_contrib_ratio": "Average Memory Contribution Ratio per Token",
                     }
 
                     for metric_key, metric_name in metrics.items():
@@ -206,8 +217,33 @@ def train_val_one_epoch(
                 memory_stats.clear()
             accelerator.log(logs)
 
+        # regular checkpoint
+        if (state.global_step) % cfg.experiment.save_every == 0:
+            num_recent_to_keep = cfg.experiment.get("save_recent_n", 3)
+
+            recent_ckpt_dir = os.path.join(cfg.experiment.ckpt_dir, "recent")
+            os.makedirs(recent_ckpt_dir, exist_ok=True)
+
+            save_path = os.path.join(
+                recent_ckpt_dir, f"recent_checkpoint_{state.recent_ckpt_idx}.pt"
+            )
+
+            logger.log(
+                f"Saving recent checkpoint for step {state.global_step} to {save_path}",
+                "green",
+                main_process=True,
+            )
+            state.model.save(save_path)
+            with open(os.path.join(save_path, "metadata.txt"), "w") as f:
+                f.write(
+                    f"Training loss: {train_causal_loss}\nGlobal step: {state.global_step}"
+                )
+
+            # update the index for the next save
+            state.recent_ckpt_idx = (state.recent_ckpt_idx + 1) % num_recent_to_keep
+
         # best validation loss checkpoints
-        if (it + 1) % (
+        if (state.global_step) % (
             cfg.experiment.num_train_samples // cfg.experiment.num_eval
         ) == 0:
             logger.log("--- Starting validation phase ---", "yellow")
@@ -273,6 +309,7 @@ def evaluate(
     logger: Logger,
 ):
     model.eval()
+    model.reset_memory()  # TODO: move into model.eval()?
     accuracies = {}
 
     for test_split, test_loader in test_loaders.items():
@@ -321,7 +358,9 @@ def evaluate(
 
     for split in accuracies.keys():
         accuracies[split] /= (it + 1) * cfg.experiment.babilong_test_batch_size
+        logger.log(f"Split {test_split} accuracy: {accuracies[split]}", "yellow")
 
+    os.makedirs(f"results/memory_llama_{cfg.memory_llama.memory_arch}", exist_ok=True)
     with open(
         os.path.join(
             f"results/memory_llama_{cfg.memory_llama.memory_arch}", f"{logger.ts}.json"
@@ -359,10 +398,6 @@ def main(cfg: DictConfig):
             neural_memory_config=cfg.neural_memory,
             **cfg.memory_llama,
         )
-        val_loss = open(
-            os.path.join(cfg.experiment.checkpoint_name, "loss_value.txt")
-        ).read()
-        logger.log(f"Validation causal loss: {val_loss}", "blue", "normal")
 
     else:
         # --- Training ---

@@ -298,7 +298,9 @@ def evaluate(
 
     for split in accuracies.keys():
         accuracies[split] /= (it + 1) * cfg.experiment.babilong_test_batch_size
+        logger.log(f"Split {test_split} accuracy: {accuracies[split]}", "yellow")
 
+    os.makedirs("results/llama_finetune_baseline", exist_ok=True)
     with open(
         os.path.join("results/llama_finetune_baseline", f"{logger.ts}.json"), "w"
     ) as f:

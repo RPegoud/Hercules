@@ -34,14 +34,13 @@ class ResLinear(nn.Module):
             *((hidden_size * expansion_factor,) * (depth - 1)),
             hidden_size,
         ]
-        layer_sizes = zip(dims[:1], dims[1:])
+        layer_sizes = zip(dims[:-1], dims[1:])
         self.weights = nn.ParameterList(
             [
-                nn.Parameter(torch.randn(dim_in, dim_out))
+                nn.Parameter(torch.zeros(dim_in, dim_out))
                 for dim_in, dim_out in layer_sizes
             ]
         )
-        nn.init.zeros_(self.weights)
 
         self.projections = nn.ParameterList(
             [
