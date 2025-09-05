@@ -2,7 +2,7 @@ experiment:
   name: "eduweb_pt"
   seed: 0
   epochs: 1
-  eduweb_train_batch_size: 4
+  eduweb_train_batch_size: 1
   eduweb_val_batch_size: 4
   babilong_test_batch_size: 4
 
@@ -12,7 +12,7 @@ experiment:
   scheduler: "constant" # ["constant", "cosine"]
 
   num_train_samples: 5e4 # number of eduweb samples used for training
-  num_val_samples: 100 # number of samples used to compute the average validation loss
+  num_val_samples: 400 # number of samples used to compute the average validation loss
   num_eval: 50 # number of evaluations during training
   num_test_samples: 100
   max_seq_len: 2048 # maximum sequence length of training samples
@@ -28,19 +28,18 @@ experiment:
   save_recent_n: 3
   log_experiment: false # whether to log the experiment with wandb
   resume_from_checkpoint: false # whether to load an existing model checkpoint
-  checkpoint_name: ~ # name of the experiment to load the state from
+  checkpoint_name:  ~ #"checkpoints/memory_llama/09-03_16-49/best_loss/recent/recent_checkpoint_1" # name of the experiment to load the state from
 
-  run_name: "TRAIN:Llama1B|ALMA|MAC_seq|m14_15|constant_lr|t5e4"
+  run_name: "TEST:Memory_llama_no_finetune|ALMA|MAC_seq|m14_15"
 
 neural_memory:
   mlp_depth: 3
-  mlp_expansion_factor: 2
+  mlp_expansion_factor: 1
   max_adaptive_lr: 1e-2 # maximum adaptive learning rate
 
 memory_llama:
   memory_arch: "context" # the titans architecture to inject, one of ["layer", "context"]
   llama_hf_path: "meta-llama/Llama-3.2-1B"
-  # memory_layer_id: [1, 3, 5, 7, 9, 11, 13, 15] # the index of the layer to augment with a memory module
   memory_layer_id: [14, 15] # the index of the layer to augment with a memory module
   use_lora: true
   track_memory_statistics: true

@@ -12,19 +12,10 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, LlamaForCausalLM, PreTrainedTokenizerBase
 import json
 from hercules import (
+    MemoryLlama,
     Logger,
     get_specific_split_bl_dataloaders,
 )
-
-
-def assert_no_trainable_params(model: LlamaForCausalLM, logger: Logger) -> None:
-    for param in model.parameters():
-        param.requires_grad = False
-    n_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    assert n_trainable_params == 0
-    logger.log(
-        f"Llama Trainable Parameters:\n{n_trainable_params}", "blue", main_process=True
-    )
 
 
 def setup(
@@ -50,25 +41,25 @@ def setup(
     accelerator = Accelerator(
         kwargs_handlers=[accelerator_kwargs],
         log_with="wandb",
-        project_config=ProjectConfiguration(project_dir="results/llama_baseline"),
+        project_config=ProjectConfiguration(
+            project_dir="results/memory_llama_no_finetune"
+        ),
     )
     logger = Logger(accelerator=accelerator)
 
     # --- config setup ---
     OmegaConf.set_struct(cfg, False)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    cfg.llama["hf_token"] = env_vars["HF_TOKEN"]
+    cfg.memory_llama["hf_token"] = env_vars["HF_TOKEN"]
 
     logger.set_experiment_name(cfg, cfg_dict)
 
     # --- model and tokenizer setup ---
-    model = LlamaForCausalLM.from_pretrained(
-        cfg.llama.llama_hf_path,
-        token=cfg.llama.hf_token,
+    model = MemoryLlama(
+        neural_memory_config=cfg.neural_memory, **cfg.memory_llama, **cfg.lora
     )
-    assert_no_trainable_params(model, logger)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.llama.llama_hf_path)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
 
     # --- dataset setup ---
@@ -149,8 +140,10 @@ def evaluate(
         accuracies[split] /= (it + 1) * cfg.experiment.babilong_test_batch_size
         logger.log(f"Split {test_split} accuracy: {accuracies[split]}", "yellow")
 
-    os.makedirs("results/llama_baseline", exist_ok=True)
-    with open(os.path.join("results/llama_baseline", f"{logger.ts}.json"), "w") as f:
+    os.makedirs("results/memory_llama_no_finetune", exist_ok=True)
+    with open(
+        os.path.join("results/memory_llama_no_finetune", f"{logger.ts}.json"), "w"
+    ) as f:
         json.dump(accuracies, f, indent=4)
 
     accelerator.log({f"test/": {k: float(v) for k, v in accuracies.items()}})
@@ -158,7 +151,7 @@ def evaluate(
 
 @hydra.main(
     config_path="../config",
-    config_name="baseline.yaml",
+    config_name="memory_llama_no_finetune.yaml",
     version_base="1.3",
 )
 def main(cfg: DictConfig):

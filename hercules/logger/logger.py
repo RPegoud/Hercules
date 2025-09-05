@@ -58,7 +58,8 @@ class Logger:
 
     def log_memory_model(self, model: AutoModelForCausalLM, **kwargs):
         self.log("Memory Llama", "blue", **kwargs)
-        model.model.print_trainable_parameters()
+        if model.use_lora:
+            model.model.print_trainable_parameters()
         self.log(
             f"Memory Module size: {model.n_memory_params:.3e}",
             "blue",

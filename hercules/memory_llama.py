@@ -9,16 +9,19 @@ from omegaconf.listconfig import ListConfig
 from peft import PeftModel
 from dataclasses import dataclass
 from torch.nn.modules.container import ModuleList
+from torch.nn.utils import parameters_to_vector
 
 
 @dataclass
 class MemoryStatistics:
     layer: int
     gate_mean: float
+    gate_std: float
     gate_max: float
     gate_min: float
     mac_proj_memory_w_norm: float
-    memory_contrib_ratio: float
+    per_token_avg_memory_contrib_ratio: float
+    global_avg_memory_contrib_ratio: float
 
 
 TRAINABLE_LAYERS_PER_ARCH = {
@@ -51,11 +54,8 @@ class MemoryLlama(nn.Module):
         super(MemoryLlama, self).__init__()
 
         print(f"{Fore.BLUE}{Style.BRIGHT}MemoryLlama setup:")
-        llama = LlamaForCausalLM.from_pretrained(
-            llama_hf_path,
-            token=hf_token,
-        )
-
+        llama = LlamaForCausalLM.from_pretrained(llama_hf_path, token=hf_token)
+        self.use_lora = use_lora
         self.config = llama.config
 
         neural_memory_config["hidden_size"] = llama.config.hidden_size
@@ -88,7 +88,9 @@ class MemoryLlama(nn.Module):
                 r=lora_rank,
                 lora_alpha=lora_alpha,
                 target_modules=list(lora_target_modules),
-                modules_to_save=TRAINABLE_LAYERS_PER_ARCH[memory_arch]["include"],
+                modules_to_save=TRAINABLE_LAYERS_PER_ARCH[memory_arch][
+                    "include"
+                ].extend(["memory_network"]),
                 lora_dropout=lora_dropout,
                 bias="none",
                 task_type=TaskType.CAUSAL_LM,
@@ -115,6 +117,12 @@ class MemoryLlama(nn.Module):
             attention_mask=attention_mask,
             **kwargs,
         )
+
+    def reset_memory(self):
+        for mod in self.memory_modules:
+            mod.reset_memory()
+            param_norm = parameters_to_vector(mod.memory_network.parameters()).norm()
+            assert param_norm == 0, f"Expected param_norm to be zero, got {param_norm}"
 
     def set_trainable_layers(
         self, model: LlamaForCausalLM, layer_dict: dict[str, list[str]]
@@ -189,6 +197,7 @@ class MemoryLlama(nn.Module):
         base_memory_llama.model = PeftModel.from_pretrained(
             base_memory_llama.model, adapter_path
         )
+        base_memory_llama.reset_memory()
 
         assert (
             initial_params != base_memory_llama.model.parameters()
@@ -250,20 +259,20 @@ class LlamaMemoryAsContext(nn.Module):
         # of the llm is unaffected before training
         self.mac_projection = nn.Linear(memory_sequence_size, hidden_size, bias=False)
         with torch.no_grad():
-            self.mac_projection.weight[:, :hidden_size] = torch.eye(hidden_size)
-            self.mac_projection.weight[:, hidden_size:] = 0
+            self.mac_projection.weight[:, hidden_size:] = torch.eye(hidden_size)
+            self.mac_projection.weight[:, :hidden_size] = 0
 
         # we initialise the gate with zero weights and low bias so that the initial
         # behavior of the memory-augmented llama model is almost the same as the
         # original model.
         self.gate_projection = nn.Linear(hidden_size, hidden_size, bias=True)
         nn.init.zeros_(self.gate_projection.weight)
-        # nn.init.constant_(self.gate_projection.weight, 1e-4)
-        nn.init.constant_(self.gate_projection.bias, -6)  # sigmoid(-6) = 0.0025
+        nn.init.constant_(
+            self.gate_projection.bias, -10
+        )  # sigmoid(-6) = 0.0025, sigmoid(-10) = 4.5398e-05
 
     def forward(self, hidden_states, attention_mask=None, **kwargs):
-        with torch.autocast(device_type="cuda", dtype=torch.float32):
-            context = self.memory_module.retrieve(hidden_states)
+        context = self.memory_module.retrieve(hidden_states)
 
         norm_hidden_states = self.llama_layer.input_layernorm(hidden_states)
         memory_sequence = torch.cat([context, norm_hidden_states], dim=-1)
@@ -273,9 +282,7 @@ class LlamaMemoryAsContext(nn.Module):
             mac_sequence, attention_mask=attention_mask, **kwargs
         )
         attn_outputs = attn[0]
-
-        with torch.autocast(device_type="cuda", dtype=torch.float32):
-            memory_outputs = self.memory_module(attn_outputs)
+        memory_outputs = self.memory_module(attn_outputs)
 
         gate = torch.sigmoid(self.gate_projection(attn_outputs))
         memory_augmented_attn = (1 - gate) * attn_outputs + gate * memory_outputs
@@ -290,16 +297,25 @@ class LlamaMemoryAsContext(nn.Module):
             self.last_stats = MemoryStatistics(
                 layer=self.layer_id,
                 gate_mean=gate.mean().item(),
+                gate_std=gate.std().item(),
                 gate_min=gate.min().item(),
                 gate_max=gate.max().item(),
                 mac_proj_memory_w_norm=self.mac_projection.weight[:, self.hidden_size :]
                 .norm()
                 .item(),
-                memory_contrib_ratio=(
+                global_avg_memory_contrib_ratio=(
                     (
                         (memory_outputs * gate).norm()
-                        / ((1 - gate) * attn_outputs + 1e-8).norm()
+                        / (((1 - gate) * attn_outputs).norm() + 1e-8)
                     ).item()
+                ),
+                per_token_avg_memory_contrib_ratio=(
+                    (
+                        (memory_outputs * gate).norm(dim=-1)
+                        / (((1 - gate) * attn_outputs).norm(dim=-1) + 1e-8)
+                    )
+                    .mean()
+                    .item()
                 ),
             )
 
