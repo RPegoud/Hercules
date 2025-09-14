@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
 from torch.func import functional_call, vmap, grad
-from .layers import ResLinear
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from collections import OrderedDict
 import math
@@ -11,6 +10,44 @@ import math
 
 def l2_norm(x: torch.Tensor) -> torch.Tensor:
     return F.normalize(x, dim=-1)
+
+
+class MemoryNetwork(nn.Module):
+    """Deep MLP with residual connections and SiLU activation."""
+
+    def __init__(self, hidden_size: int, depth: int, expansion_factor: int):
+        super().__init__()
+        dims = [
+            hidden_size,
+            *((hidden_size * expansion_factor,) * (depth - 1)),
+            hidden_size,
+        ]
+        layer_sizes = zip(dims[:-1], dims[1:])
+        self.weights = nn.ParameterList(
+            [
+                nn.Parameter(torch.zeros(dim_in, dim_out))
+                for dim_in, dim_out in layer_sizes
+            ]
+        )
+
+        self.projections = nn.ParameterList(
+            [
+                (
+                    nn.Parameter(torch.eye(in_dim, out_dim))
+                    if in_dim == out_dim
+                    else nn.Parameter(torch.randn(in_dim, out_dim))
+                )
+                for in_dim, out_dim in layer_sizes
+            ]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for idx, (w, p) in enumerate(zip(self.weights, self.projections)):
+            if idx != 0:
+                x = F.silu(x)
+            residual = x
+            x = x @ w + residual @ p
+        return x
 
 
 class NeuralMemory(nn.Module):
@@ -23,7 +60,9 @@ class NeuralMemory(nn.Module):
     ) -> None:
         super(NeuralMemory, self).__init__()
 
-        self.memory_network = ResLinear(hidden_size, mlp_depth, mlp_expansion_factor)
+        self.memory_network = MemoryNetwork(
+            hidden_size, mlp_depth, mlp_expansion_factor
+        )
         self.param_shapes = OrderedDict(
             {n: p.shape for n, p in self.memory_network.named_parameters()}
         )
@@ -55,7 +94,6 @@ class NeuralMemory(nn.Module):
             x = x.unsqueeze(0)
         return x
 
-    # @torch._dynamo.disable
     @staticmethod
     def _unpack_vector_to_tensors(vec: torch.Tensor, param_shapes: list[torch.Size]):
         """Given a 1D Tensor `vec`, yield tensors matching `param_shapes` in order."""
@@ -68,7 +106,6 @@ class NeuralMemory(nn.Module):
             offset += n
         return tensors
 
-    # @torch._dynamo.disable
     def _vector_to_ordered_dict(
         self, x: torch.Tensor
     ) -> OrderedDict[str, torch.Tensor]:
@@ -119,10 +156,12 @@ class NeuralMemory(nn.Module):
             q = self.get_query_projection(x)
             return functional_call(self.memory_network, memory_net_params, q)
 
-    def reset_memory(self):
+    def reset_memory(self) -> None:
+        """Reset the state of the Memory Network and the Momentum buffer."""
         with torch.no_grad():
             for param in self.memory_network.parameters():
                 param.zero_()
+            self.momentum_buffer.zero_()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._maybe_add_batch(x)

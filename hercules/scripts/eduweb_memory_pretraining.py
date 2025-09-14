@@ -21,6 +21,7 @@ from hercules import (
     get_specific_split_bl_dataloaders,
 )
 from torch.optim import Optimizer
+from colorama import Style, Fore
 
 
 def get_scheduler(optimizer: Optimizer, cfg: DictConfig) -> LRScheduler:
@@ -88,18 +89,36 @@ def setup(
     cfg.experiment["ckpt_dir"] = os.path.join(
         accelerator.project_dir, logger.ts, "best_loss"
     )
+    if not cfg.experiment.resume_from_step:
+        cfg.experiment.resume_from_step = 0
+    else:
+        logger.log(
+            f"Resuming training from step: {cfg.experiment.resume_from_step}", "yellow"
+        )
 
     # --- model and tokenizer setup ---
-    model = MemoryLlama(
-        neural_memory_config=cfg.neural_memory, **cfg.memory_llama, **cfg.lora
-    )
+    if cfg.experiment.resume_from_checkpoint:
+        logger.log(
+            f"Loading checkpoint state from {cfg.experiment.checkpoint_name}", "blue"
+        )
+        model = MemoryLlama.load(
+            path=cfg.experiment.checkpoint_name,
+            memory_llama_config=cfg.memory_llama,
+        )
+        # TODO: modify to enable load and train (currently only load and test)
+        optimizer, scheduler = None, None
 
-    optimizer = bnb.optim.Adam8bit(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=cfg.experiment.learning_rate,
-        weight_decay=cfg.experiment.weight_decay,
-    )
-    scheduler = get_scheduler(optimizer, cfg)
+    else:
+        model = MemoryLlama(
+            neural_memory_config=cfg.neural_memory, **cfg.memory_llama, **cfg.lora
+        )
+
+        optimizer = bnb.optim.Adam8bit(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=cfg.experiment.learning_rate,
+            weight_decay=cfg.experiment.weight_decay,
+        )
+        scheduler = get_scheduler(optimizer, cfg)
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.memory_llama.llama_hf_path)
     tokenizer.pad_token = tokenizer.eos_token
@@ -163,105 +182,45 @@ def train_val_one_epoch(
         disable=not accelerator.is_main_process,
     )
 
-    memory_stats = []
-
     for it, batch in enumerate(progress_bar):
-        with accelerator.accumulate(state.model):
-            state.model.train()
-            state.optimizer.zero_grad()
-            state.global_step = (it + 1) * (state.epoch + 1)
+        # manually skip samples until the resume step
+        if it < cfg.experiment.resume_from_step:
+            pass
 
-            batch = {k: v for k, v in batch.items()}
-            outputs = state.model(**batch)
-            loss = outputs.loss
-            accelerator.backward(loss)
-            state.optimizer.step()
+        else:
+            with accelerator.accumulate(state.model):
+                state.model.train()
+                state.optimizer.zero_grad()
+                state.global_step = (it + 1) * (state.epoch + 1)
 
-        train_causal_loss = loss.item()
+                batch = {k: v for k, v in batch.items()}
+                outputs = state.model(**batch)
+                loss = outputs.loss
+                accelerator.backward(loss)
+                state.optimizer.step()
 
-        # log training loss and learning rate
-        if accelerator.is_main_process and cfg.experiment.log_experiment:
-            logs = {}
-            logs["eduweb_causal_loss"] = train_causal_loss
-            logs["learning_rate"] = state.scheduler.get_lr()[0]
-            logs["epoch"] = state.epoch
-            logs["step"] = state.global_step
+            train_causal_loss = loss.item()
 
-            if cfg.memory_llama.track_memory_statistics:
-                for layer_id, layer in enumerate(state.model.layers):
-                    layer = state.model.layers[layer_id]
-                    if hasattr(layer, "last_stats") and layer.last_stats is not None:
-                        memory_stats.append(layer.last_stats.__dict__)
-
-                if memory_stats:
-                    metrics = {
-                        "gate_mean": "Gate Mean",
-                        "gate_std": "Gate Std",
-                        "gate_min": "Gate Min",
-                        "gate_max": "Gate Max",
-                        "mac_proj_memory_w_norm": "MAC Proj Memory Weight Norm",
-                        "global_avg_memory_contrib_ratio": "Global Average Memory Contribution Ratio",
-                        "per_token_avg_memory_contrib_ratio": "Average Memory Contribution Ratio per Token",
-                    }
-
-                    for metric_key, metric_name in metrics.items():
-                        layer_values = {}
-
-                        for s in memory_stats:
-                            layer_id = s["layer"]
-                            layer_values[f"Layer {layer_id}"] = s[metric_key]
-
-                        if layer_values:
-                            logs[f"Memory Stats/{metric_name}"] = layer_values
-
-                memory_stats.clear()
-            accelerator.log(logs)
-
-        # regular checkpoint
-        if (state.global_step) % cfg.experiment.save_every == 0:
-            num_recent_to_keep = cfg.experiment.get("save_recent_n", 3)
-
-            recent_ckpt_dir = os.path.join(cfg.experiment.ckpt_dir, "recent")
-            os.makedirs(recent_ckpt_dir, exist_ok=True)
-
-            save_path = os.path.join(
-                recent_ckpt_dir, f"recent_checkpoint_{state.recent_ckpt_idx}.pt"
+            logger.log_metrics(
+                model=state.model,
+                train_causal_loss=train_causal_loss,
+                state=state,
+                cfg=cfg,
             )
 
-            logger.log(
-                f"Saving recent checkpoint for step {state.global_step} to {save_path}",
-                "green",
-                main_process=True,
+            # regular ceckpoint
+            logger.save_regular_checkpoint(
+                train_causal_loss=train_causal_loss, state=state, cfg=cfg
             )
-            state.model.save(save_path)
-            with open(os.path.join(save_path, "metadata.txt"), "w") as f:
-                f.write(
-                    f"Training loss: {train_causal_loss}\nGlobal step: {state.global_step}"
-                )
 
-            # update the index for the next save
-            state.recent_ckpt_idx = (state.recent_ckpt_idx + 1) % num_recent_to_keep
-
-        # best validation loss checkpoints
-        if (state.global_step) % (
-            cfg.experiment.num_train_samples // cfg.experiment.num_eval
-        ) == 0:
-            logger.log("--- Starting validation phase ---", "yellow")
-            avg_val_loss = validate(state, val_loader, cfg, accelerator)
-            logger.log(f"Average validation loss: {avg_val_loss:.3f}", "yellow")
-
-            if state.lowest_val_loss is None or avg_val_loss < state.lowest_val_loss:
-                state.lowest_val_loss = avg_val_loss
-                state.model.save(cfg.experiment.ckpt_dir)
-                with open(
-                    os.path.join(cfg.experiment.ckpt_dir, "loss_value.txt"), "w"
-                ) as f:
-                    f.write(f"Best loss: {state.lowest_val_loss}")
-
-                logger.log(
-                    f"Saved Checkpoint {it+1} [BEST LOSS = {state.lowest_val_loss:.3f}] under {cfg.experiment.ckpt_dir}",
-                    "green",
-                    main_process=True,
+            # best validation loss checkpoints
+            if (state.global_step) % (
+                cfg.experiment.num_train_samples // cfg.experiment.num_eval
+            ) == 0:
+                logger.log("--- Starting validation phase ---", "yellow")
+                avg_val_loss = validate(state, val_loader, cfg, accelerator)
+                logger.log_val_loss_and_save(
+                    avg_val_loss=avg_val_loss, state=state, cfg=cfg
                 )
 
     return state
@@ -300,6 +259,54 @@ def validate(
     return avg_val_causal_loss
 
 
+@torch.no_grad()
+def generate_long_context(
+    model: MemoryLlama,
+    tokenizer: PreTrainedTokenizerBase,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    labels: torch.Tensor,
+    cfg: DictConfig,
+):
+    """
+    Handles generation for prompts that are longer than the model's context window.
+    """
+
+    def _generate(inputs, attn_mask):
+        return model.generate(
+            input_ids=inputs,
+            attention_mask=attn_mask,
+            max_new_tokens=cfg.experiment.max_gen_tokens,
+            pad_token_id=tokenizer.eos_token_id,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            top_k=None,
+        )
+
+    context_window = model.config.hidden_size
+    seq_len = input_ids.shape[1]
+
+    # If the prompt fits in the context window, use the standard generate method
+    if seq_len <= context_window:
+        return _generate(inputs=input_ids, attn_mask=attention_mask)
+
+    id_chunks = torch.split(input_ids, context_window, dim=1)
+    label_chunks = torch.split(attention_mask, context_window, dim=1)
+    attn_mask_chunks = torch.split(labels, context_window, dim=1)
+
+    # process all chunks except the last one
+    for i in range(len(id_chunks) - 1):
+        model(
+            input_ids=id_chunks[i],
+            attention_mask=attn_mask_chunks[i],
+            labels=label_chunks[i],
+        )
+
+    # only call generate on the last chunk
+    return _generate(inputs=id_chunks[-1], attn_mask=attn_mask_chunks[-1])
+
+
 def evaluate(
     model: MemoryLlama,
     tokenizer: PreTrainedTokenizerBase,
@@ -309,8 +316,8 @@ def evaluate(
     logger: Logger,
 ):
     model.eval()
-    model.reset_memory()  # TODO: move into model.eval()?
     accuracies = {}
+    memory_stats = []
 
     for test_split, test_loader in test_loaders.items():
         accuracies[test_split] = 0
@@ -331,18 +338,22 @@ def evaluate(
                 for k, v in batch.items()
             }
             unwrapped_model = accelerator.unwrap_model(model)
-            prompt_ids = batch["prompt_input_ids"]
-            prompt_attention_mask = batch["prompt_attention_mask"]
-            generated_ids = unwrapped_model.generate(
-                input_ids=prompt_ids,
-                attention_mask=prompt_attention_mask,
-                max_new_tokens=cfg.experiment.max_gen_tokens,
-                pad_token_id=tokenizer.eos_token_id,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-                top_k=None,
+            unwrapped_model.reset_memory()
+
+            generated_ids = generate_long_context(
+                unwrapped_model,
+                tokenizer,
+                input_ids=batch["prompt_input_ids"],
+                attention_mask=batch["prompt_attention_mask"],
+                labels=batch["labels"],
+                cfg=cfg,
             )
+
+            logs = logger.log_memory_metrics(
+                model=model,
+                logs={"step": it + 1},
+            )
+            accelerator.log(logs)
 
             newly_generated_ids = generated_ids[:, -cfg.experiment.max_gen_tokens :]
 
@@ -358,7 +369,7 @@ def evaluate(
 
     for split in accuracies.keys():
         accuracies[split] /= (it + 1) * cfg.experiment.babilong_test_batch_size
-        logger.log(f"Split {test_split} accuracy: {accuracies[split]}", "yellow")
+        logger.log(f"Split {split} accuracy: {accuracies[split]}", "yellow")
 
     os.makedirs(f"results/memory_llama_{cfg.memory_llama.memory_arch}", exist_ok=True)
     with open(
@@ -388,20 +399,19 @@ def main(cfg: DictConfig):
         logger,
     ) = setup(cfg)
 
-    if cfg.experiment.resume_from_checkpoint:
-        logger.log(
-            f"Loading checkpoint state from {cfg.experiment.checkpoint_name}", "blue"
-        )
-        _ = cfg.memory_llama.pop("use_lora")
-        state.model.load(
-            adapter_path=cfg.experiment.checkpoint_name,
-            neural_memory_config=cfg.neural_memory,
-            **cfg.memory_llama,
-        )
-
-    else:
+    load_and_resume = (
+        cfg.experiment.resume_from_checkpoint and cfg.experiment.resume_from_step
+    )
+    if load_and_resume or not cfg.experiment.resume_from_checkpoint:
         # --- Training ---
-        logger.log("--- Starting training phase ---", "cyan")
+        if not cfg.experiment.resume_from_step:
+            logger.log("--- Starting training phase ---", "cyan")
+        else:
+            logger.log(
+                f"--- Resuming training from step: {cfg.experiment.resume_from_step} ---",
+                "cyan",
+            )
+
         logger.log(
             f"Task: {cfg.experiment.train_task_name}, Split: {cfg.experiment.train_splits}",
             "cyan",
@@ -422,6 +432,7 @@ def main(cfg: DictConfig):
     train_loader, val_loader, state.optimizer = accelerator.free_memory(
         train_loader, val_loader, state.optimizer
     )
+    test_loaders = accelerator.prepare(test_loaders)
 
     # --- Test ---
     logger.log("--- Starting test phase ---", "cyan")

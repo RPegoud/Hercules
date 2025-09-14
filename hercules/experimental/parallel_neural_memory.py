@@ -136,7 +136,7 @@ class NeuralMemory(nn.Module):
             W_all_dict[name] = W_all
         return W_all_dict, M_all_dict
 
-    # @torch.compile
+    @torch.compile
     def process_sequence_in_chunks(
         self,
         initial_W: dict[str, torch.Tensor],

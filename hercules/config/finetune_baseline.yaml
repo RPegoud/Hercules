@@ -12,7 +12,7 @@ experiment:
   num_val_samples: 2000 # number of samples used to compute the average validation loss
   num_eval: 100 # number of evaluations during training
   num_test_samples: 100
-  max_seq_len: 2048 # maximum sequence length of training samples
+  max_train_seq_len: 2048 # maximum sequence length of training samples
 
   train_task_name: "2k" # the maximal sequence length of the Babilong samples
   test_task_name: "2k"

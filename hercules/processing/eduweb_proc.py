@@ -15,7 +15,7 @@ def tokenize_fn(
         examples["text"],
         padding="max_length",
         truncation=True,
-        max_length=cfg.experiment.max_seq_len,
+        max_length=cfg.experiment.max_train_seq_len,
     )
 
     input_ids = tokens["input_ids"]

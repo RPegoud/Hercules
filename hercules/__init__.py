@@ -1,8 +1,4 @@
 # flake8: noqa
-from hercules.layers import (
-    ResLinear,
-    LinearProjection,
-)
 from hercules.neural_memory import NeuralMemory
 from hercules.logger import Logger
 from hercules.memory_llama import MemoryLlama
