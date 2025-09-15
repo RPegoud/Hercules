@@ -4,13 +4,18 @@ Source code for the MSc project **"Neural Memory Augmentation for Large Language
 
 ## 🧠 Abstract
 <img src="MemoryLlama.png" width="300" align="right" style="padding-left:1em"/>
-A fundamental constraint of Large Language Models (LLMs) is their fixed context window, limiting their ability to perform tasks requiring long-range memory and reasoning. While various methods attempt to scale the context window by making the attention mechanism more efficient, 
-equipping LLMs with dedicated, online-learning memory systems represents a more scalable and cognitively-plausible paradigm.
-This thesis introduces MemoryLlama, a novel architecture that integrates a test-time trainable memory module, inspired by the Titans model, into a pre-trained Llama-3 foundation model. We investigate several architectural injection strategies and adapt Parameter-Efficient Fine-Tuning (PEFT) methods to co-train the memory and backbone components.
+
+A fundamental constraint of Large Language Models (LLMs) is their fixed context window, limiting their ability to perform tasks requiring long-range memory and reasoning. While various methods attempt to scale the context window by making the attention mechanism more efficient, equipping LLMs with dedicated, online-learning memory systems represents a more scalable and cognitively-plausible paradigm.
+
+This thesis introduces [`MemoryLlama`](https://github.com/RPegoud/Hercules/blob/main/hercules/memory_llama.py), a novel architecture that integrates a test-time trainable memory module, inspired by the Titans model, into a pre-trained Llama-3 foundation model. We investigate several architectural injection strategies and adapt Parameter-Efficient Fine-Tuning (PEFT) methods to co-train the memory and backbone components.
+
 Empirical evaluation reveals that memory injection is highly sensitive to training dynamics and hyperparameters. Despite displaying promising initial use of the memory modules, both architectural variants ultimately suffered catastrophic forgetting. Analysis of training metrics and ablation studies suggest that this instability arises when our LLM is jointly fine-tuned with the memory modules, while at the same time being a requirement for performance.
+
 Beyond MemoryLlama itself, this thesis contributes a rigorous characterisation of the challenges of training such hybrid models. By providing a diagnostic framework, a detailed analysis of failure modes, and directions for future research, it offers insights for building more robust and capable memory-augmented LLMs.
 
 ##  🌍 Python Environment
+
+
 
 This project uses `uv` as a package manager. To get started, install uv and the virtual environment.
 ```bash
