@@ -1,5 +1,8 @@
 # `Hercules`: Neural Memory Augmentation for Large Language Models
 
+> [!NOTE]
+> Ryan Pegoud is the sole contributor to this repository, contributions made by Davide Paglieri correspond to commits made by Ryan from the UCL Centre for Artificial intelligence cluster.
+
 Source code for the MSc project **"Neural Memory Augmentation for Large Language Models"** by Ryan Pégoud at University College London.
 
 ## 🧠 Abstract
